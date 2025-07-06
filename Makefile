@@ -2,7 +2,7 @@ CC          = g++
 REDIS_LIB_CCFLAGS = -lhiredis
 CCFLAGS     = -g -O3 -fPIC -shared -lstdc++ \
     -I. -I$(CUDA_DIR)/include -I/usr/local/include \
-    -I ../util \
+    -I ./util \
     -L. -L/usr/local/lib \
     -lhashpipe -lrt -lm \
     -ldl \
@@ -13,8 +13,8 @@ SOURCES  = net_thread.c \
     output_thread.c \
     process_frame.c \
     databuf.c \
-    ../util/pff.cpp \
-	../util/image.cpp
+    ./util/pff.cpp \
+	./util/image.cpp
 
 INCLUDES = databuf.h compute_thread.h process_frame.h
 

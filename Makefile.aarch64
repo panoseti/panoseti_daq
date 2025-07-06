@@ -13,8 +13,8 @@ SOURCES  = net_thread.c \
     output_thread.c \
     process_frame.c \
     databuf.c \
-    ../util/pff.cpp \
-	../util/image.cpp
+    ./util/pff.cpp \
+	./util/image.cpp
 
 N_INPUT_BLOCKS=128
 N_OUTPUT_BLOCKS=32
