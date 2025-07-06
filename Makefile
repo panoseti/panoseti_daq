@@ -18,10 +18,13 @@ SOURCES  = net_thread.c \
 
 INCLUDES = databuf.h compute_thread.h process_frame.h
 
+N_INPUT_BLOCKS=512
+N_OUTPUT_BLOCKS=128
+
 all: $(TARGET)
 
 $(TARGET): $(SOURCES) $(INCLUDES)
-	$(CC) -o $(TARGET) $(SOURCES) $(CCFLAGS)
+	$(CC) -o $(TARGET) $(SOURCES) $(CCFLAGS) -DN_INPUT_BLOCKS=$(N_INPUT_BLOCKS) -DN_OUTPUT_BLOCKS=$(N_OUTPUT_BLOCKS)
 
 tags:
 	ctags -R .
