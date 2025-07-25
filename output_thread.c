@@ -199,6 +199,8 @@ int write_img_header_json(
     fprintf(f, "{\n");
     for (int i = 0; i < QUABO_PER_MODULE; i++)
     {
+        if (dataHeader->img_mod_head[frameIndex].pkt_head[i].pkt_nsec > 999999999)
+            dataHeader->img_mod_head[frameIndex].pkt_head[i].pkt_nsec = 999999999;
         fprintf(f,
                 "   \"quabo_%1u\": { \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
                 i,
@@ -294,6 +296,8 @@ int write_ph_header_json(
         fprintf(f, "{\n");
         for (int i = 0; i < QUABO_PER_MODULE; i++)
         {
+            if (dataHeader->ph_img_head[frameIndex].pkt_head[i].pkt_nsec > 999999999)
+                dataHeader->ph_img_head[frameIndex].pkt_head[i].pkt_nsec = 999999999;
             fprintf(f,
                     "   \"quabo_%1u\": { \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
                     i,
@@ -312,6 +316,8 @@ int write_ph_header_json(
     }
     else
     {
+        if (dataHeader->ph_img_head[frameIndex].pkt_head[0].pkt_nsec > 999999999)
+            dataHeader->ph_img_head[frameIndex].pkt_head[0].pkt_nsec = 999999999;
         fprintf(f,
                 "{ \"quabo_num\": %1u, \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
                 dataHeader->ph_img_head[frameIndex].pkt_head[0].quabo_num,
