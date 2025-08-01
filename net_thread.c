@@ -410,17 +410,18 @@ static void *run(hashpipe_thread_args_t *args)
 
             // check the timestamp here;
             // then decide is we need to write the data into snapshot files.
-	    if (blockHeader->pkt_head[i].acq_mode == 0x01)
+            if (blockHeader->pkt_head[i].acq_mode == 0x01)
             {
                 // for PH snapshots
                 tdiff = timeval_diff(&lastPHTime, &nowTime);
-                if (tdiff > ssint * 1000){
+                if (tdiff > ssint * 1000)
+                {
                     WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
                     lastPHTime.tv_sec = nowTime.tv_sec;
-		    lastPHTime.tv_usec = nowTime.tv_usec;
-		}
+                    lastPHTime.tv_usec = nowTime.tv_usec;
+                }
             }
-            else if (blockHeader->pkt_head[i].acq_mode == 0x02)
+            else if (blockHeader->pkt_head[i].acq_mode == 0x02 || blockHeader->pkt_head[i].acq_mode == 0x03)
             {
                 // if we get four packets from four different quabos,
                 // imgfull will be 0xf.
@@ -435,11 +436,12 @@ static void *run(hashpipe_thread_args_t *args)
                     imgfull = 0;
                     // for Img16 snapshots
                     tdiff = timeval_diff(&lastImg16Time, &nowTime);
-                    if (tdiff > ssint * 1000){
+                    if (tdiff > ssint * 1000)
+                    {
                         WriteImgSnapshots(mov16_fp, imgheader, imgbuf);
                         lastImg16Time.tv_sec = nowTime.tv_sec;
-		        lastImg16Time.tv_usec = nowTime.tv_usec;
-		    }
+                        lastImg16Time.tv_usec = nowTime.tv_usec;
+                    }
                 }
             }
 
