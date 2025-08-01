@@ -105,7 +105,9 @@ static void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data)
     pff_start_json(fp);
     write_img_snapshot_header(fp, header);
     pff_end_json(fp);
-    pff_write_image(fp, PIXELS_PER_IMAGE * 2, data);
+    pff_write_image(fp, PIXELS_PER_IMAGE * 2 * 4, data);
+    fflush(fp);
+    fsync(fileno(fp));
 }
 
 // Initialization function for Hashpipe.
@@ -264,8 +266,8 @@ static void *run(hashpipe_thread_args_t *args)
     struct timeval nowTime;                   // Current NTP UTC time
     struct timeval lastImg16Time, lastPHTime; // Timestamp for the last pkt
     uint64_t tdiff = 0;                       // time difference(us)
-    lastTime.tv_sec = 0;
-    lastTime.tv_usec = 0;
+    lastPHTime.tv_sec = 0;
+    lastPHTime.tv_usec = 0;
     uint8_t imgfull = 0; // this is for indicating if we get a full image from 4 quabos
     int rc;
 
@@ -304,8 +306,8 @@ static void *run(hashpipe_thread_args_t *args)
     // let's create snapshot files here
     char ssmovie[64];
     char ssph[64];
-    snprintf(ssmovie, sizeof(ssmovie), "%s/movie16.pff", ssdir);
-    snprintf(ssph, sizeof(ssph), "%s/ph.pff", ssdir);
+    snprintf(ssmovie, sizeof(ssmovie), "%s/module_0/obs_snapshot/start_0.img16.seqno_0.pff", ssdir);
+    snprintf(ssph, sizeof(ssph), "%s/module_0/obs_snapshot/start_0.ph256.seqno_0.pff", ssdir);
     hashpipe_info(__FUNCTION__, "Movie snapshot: %s", ssmovie);
     hashpipe_info(__FUNCTION__, "PH snapshot: %s", ssph);
     FILE *mov16_fp = fopen(ssmovie, "w");
@@ -408,13 +410,15 @@ static void *run(hashpipe_thread_args_t *args)
 
             // check the timestamp here;
             // then decide is we need to write the data into snapshot files.
-            if (blockHeader->pkt_head[i].acq_mode == 0x01)
+	    if (blockHeader->pkt_head[i].acq_mode == 0x01)
             {
                 // for PH snapshots
-                tdiff = timeval_diff(lastPHTime, nowTime);
-                if (tdiff > ssint * 1000)
-                    WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER, BYTES_PER_PKT_IMAGE);
-                lastPHTime = nowTime;
+                tdiff = timeval_diff(&lastPHTime, &nowTime);
+                if (tdiff > ssint * 1000){
+                    WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
+                    lastPHTime.tv_sec = nowTime.tv_sec;
+		    lastPHTime.tv_usec = nowTime.tv_usec;
+		}
             }
             else if (blockHeader->pkt_head[i].acq_mode == 0x02)
             {
@@ -430,10 +434,12 @@ static void *run(hashpipe_thread_args_t *args)
                 {
                     imgfull = 0;
                     // for Img16 snapshots
-                    tdiff = timeval_diff(lastImg16Time, nowTime);
-                    if (tdiff > ssint * 1000)
-                        WriteImgSnapshots(mov16_fp, imgheader, pkt_data + BYTE_PKT_HEADER, BYTES_PER_PKT_IMAGE);
-                    lastImg16Time = nowTime;
+                    tdiff = timeval_diff(&lastImg16Time, &nowTime);
+                    if (tdiff > ssint * 1000){
+                        WriteImgSnapshots(mov16_fp, imgheader, imgbuf);
+                        lastImg16Time.tv_sec = nowTime.tv_sec;
+		        lastImg16Time.tv_usec = nowTime.tv_usec;
+		    }
                 }
             }
 
