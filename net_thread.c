@@ -21,6 +21,7 @@
 #include "databuf.h"
 #include "pff.h"
 #include "dp.h"
+#include "image.h"
 
 // PKTSOCK Params
 // (These should be only changed with caution as it need to change with MMAP)
@@ -280,6 +281,7 @@ static void *run(hashpipe_thread_args_t *args)
     char ssdir[64];
     int ssint = 0;
     uint8_t imgbuf[2048];
+    unit8_t oimgbuf[512];
     uint8_t quabo_num = 0;
     PACKET_HEADER imgheader[4];
 
@@ -429,7 +431,8 @@ static void *run(hashpipe_thread_args_t *args)
                 quabo_num = blockHeader->pkt_head[i].quabo_num;
                 imgfull |= 1 << quabo_num;
                 // TODO: group the mov images?
-                memcpy(imgbuf + quabo_num * 512, pkt_data + BYTE_PKT_HEADER, 512);
+                quabo16_to_module16_copy(pkt_data + BYTE_PKT_HEADER, quabo_num, oimgbuf);
+                memcpy(imgbuf + quabo_num * 512, oimgbuf, 512);
                 memcpy(&imgheader[quabo_num], &blockHeader->pkt_head[i], sizeof(PACKET_HEADER));
                 if (imgfull == 0xf)
                 {
