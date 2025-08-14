@@ -1,5 +1,3 @@
-// snapshot.c
-//
 // Contains functions for creating and sending filesystem and UDS snapshots.
 
 #include <stdio.h>
@@ -12,10 +10,12 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <netinet/in.h> 
 
 #include "snapshot.h"
 #include "hashpipe.h"
 #include "pff.h"
+#include "databuf.h" 
 
 // =====================================================================
 // Filesystem Snapshot Functions (originally from net_thread.c)
@@ -97,15 +97,12 @@ static void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data)
 // UDS Snapshot Functions
 // =====================================================================
 
-UDS_PATH_TEMPLATE = "/tmp/hashpipe_grpc.module_%d.dp_%s.sock"
-MAX_DP_LENGTH = 16
-MAX_UDS_PATH_LENGTH = 128
+#define UDS_PATH_TEMPLATE "/tmp/hashpipe_grpc.dp_%s.sock"
 
 typedef struct uds_connection {
-    int module_id;
-    char dp_name[MAX_DP_LENGTH];
-    int fd;
-    char socket_path[MAX_UDS_PATH_LENGTH];
+    char dp_name[16];
+    int fd; // The connected socket
+    char socket_path[128];
     struct uds_connection *next;
 } uds_connection_t;
 
@@ -121,19 +118,15 @@ const char* uds_dp_to_str(DATA_PRODUCT dp) {
     }
 }
 
-// CLIENT RESPONSIBILITY: Attempts a non-blocking connection to the server's socket.
+// Attempts a non-blocking connection to the server's socket.
 static void uds_connect(uds_connection_t* conn) {
     if (conn->fd >= 0) {
-        close(conn->fd); // Close any previous fd
+        close(conn->fd);
     }
 
     conn->fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (conn->fd < 0) {
-        // Cannot create socket, will retry later
-        return;
-    }
+    if (conn->fd < 0) return;
 
-    // Set to non-blocking
     int flags = fcntl(conn->fd, F_GETFL, 0);
     fcntl(conn->fd, F_SETFL, flags | O_NONBLOCK);
 
@@ -144,78 +137,78 @@ static void uds_connect(uds_connection_t* conn) {
 
     if (connect(conn->fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         if (errno != EINPROGRESS) {
-            // Connection failed immediately (e.g., server not running).
-            // Close fd and it will be retried on the next snapshot.
             close(conn->fd);
             conn->fd = -1;
         }
-        // If EINPROGRESS, the connection is being established. send() will reveal the outcome.
     }
 }
 
-static uds_connection_t* get_uds_connection(int module_id, const char* dp_name) {
+// Gets a connection manager for a given data product.
+static uds_connection_t* get_uds_connection(const char* dp_name) {
     uds_connection_t* conn;
     for (conn = g_uds_connections; conn != NULL; conn = conn->next) {
-        if (conn->module_id == module_id && strcmp(conn->dp_name, dp_name) == 0) {
+        if (strcmp(conn->dp_name, dp_name) == 0) {
             return conn;
         }
     }
+
     conn = (uds_connection_t*)malloc(sizeof(uds_connection_t));
     if (conn == NULL) {
-        hashpipe_error(__FUNCTION__, "Failed to allocate memory for UDS connection");
+        hashpipe_error(__FUNCTION__, "Failed to allocate UDS connection memory");
         return NULL;
     }
-    conn->module_id = module_id;
+    
     strncpy(conn->dp_name, dp_name, sizeof(conn->dp_name) - 1);
     conn->dp_name[sizeof(conn->dp_name) - 1] = '\0';
-    conn->fd = -1; // Start as not connected
-    snprintf(conn->socket_path, sizeof(conn->socket_path), UDS_PATH_TEMPLATE, module_id, dp_name);
+    conn->fd = -1;
+    snprintf(conn->socket_path, sizeof(conn->socket_path), UDS_PATH_TEMPLATE, dp_name);
     conn->next = g_uds_connections;
     g_uds_connections = conn;
-    hashpipe_info(__FUNCTION__, "Created UDS connection manager for %s", conn->socket_path);
+
+    hashpipe_info(__FUNCTION__, "Created UDS client manager for %s", conn->socket_path);
     return conn;
 }
 
 static void WritePFFToUds(int module_id, DATA_PRODUCT dp, const char* json_doc, const void* image_data, size_t image_bytes) {
     const char* dp_name = uds_dp_to_str(dp);
-    uds_connection_t* conn = get_uds_connection(module_id, dp_name);
+    uds_connection_t* conn = get_uds_connection(dp_name);
     if (conn == NULL) return;
 
-    // CLIENT RESPONSIBILITY: If not connected, try to connect.
     if (conn->fd < 0) {
         uds_connect(conn);
-        if (conn->fd < 0) {
-            // Connection attempt failed, silently drop frame and retry next time.
-            return;
-        }
+        if (conn->fd < 0) return; // Connection failed, drop frame and retry next time.
     }
 
-    struct iovec iov[3];
+    // Prepare the 4 parts of the message for writev
+    struct iovec iov[4];
     char separator[] = "\n\n*";
+    
+    // Part 1: 2-byte module ID in network byte order (big-endian)
+    uint16_t net_module_id = htons((uint16_t)module_id);
+    iov[0].iov_base = &net_module_id;
+    iov[0].iov_len = sizeof(net_module_id);
 
-    iov[0].iov_base = (void*)json_doc;
-    iov[0].iov_len = strlen(json_doc);
-    iov[1].iov_base = separator;
-    iov[1].iov_len = 3;
-    iov[2].iov_base = (void*)image_data;
-    iov[2].iov_len = image_bytes;
+    // Part 2: JSON header
+    iov[1].iov_base = (void*)json_doc;
+    iov[1].iov_len = strlen(json_doc);
 
-    ssize_t bytes_sent = writev(conn->fd, iov, 3);
+    // Part 3: Separator
+    iov[2].iov_base = separator;
+    iov[2].iov_len = 3;
+
+    // Part 4: Binary image data
+    iov[3].iov_base = (void*)image_data;
+    iov[3].iov_len = image_bytes;
+
+    ssize_t bytes_sent = writev(conn->fd, iov, 4);
 
     if (bytes_sent < 0) {
-        // Handle common non-blocking errors gracefully
         if (errno == EPIPE || errno == ECONNRESET) {
-            // Server closed connection. Mark for reconnection.
             hashpipe_warn(__FUNCTION__, "UDS connection to %s reset. Will reconnect.", conn->socket_path);
             close(conn->fd);
             conn->fd = -1;
-        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            // Server buffer is full. Silently drop frame.
-        } else {
-            // Other connection error (e.g., connect() failed after EINPROGRESS)
-            close(conn->fd);
-            conn->fd = -1;
         }
+        // For EAGAIN/EWOULDBLOCK, silently drop frame.
     }
 }
 
