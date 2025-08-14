@@ -19,6 +19,7 @@
 #include "hashpipe.h"
 
 #include "databuf.h"
+#include "snapshot.h"
 #include "pff.h"
 #include "dp.h"
 #include "image.h"
@@ -45,71 +46,6 @@ static uint64_t timeval_diff(struct timeval *start, struct timeval *end)
     return diff.tv_sec * 1000000 + diff.tv_usec;
 }
 
-static int write_ph_snapshot_header(FILE *f, PACKET_HEADER *dataHeader)
-{
-    if (dataHeader->pkt_nsec > 999999999)
-        dataHeader->pkt_nsec = 999999999;
-    fprintf(f,
-            "{ \"quabo_num\": %1u, \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
-            dataHeader->quabo_num,
-            dataHeader->pkt_num,
-            dataHeader->pkt_tai,
-            dataHeader->pkt_nsec,
-            dataHeader->tv_sec,
-            dataHeader->tv_usec);
-    return 0;
-}
-
-// write data into ph snapshot file
-static void WritePHSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data)
-{
-    // move the pointer to the beginning,
-    // as we only need one pkt in the snapshot file.
-    fseek(fp, 0, SEEK_SET);
-    pff_start_json(fp);
-    write_ph_snapshot_header(fp, header);
-    pff_end_json(fp);
-    pff_write_image(fp, PIXELS_PER_IMAGE * 2, data);
-}
-
-int write_img_snapshot_header(FILE *f, PACKET_HEADER *dataHeader)
-{
-    fprintf(f, "{\n");
-    for (int i = 0; i < QUABO_PER_MODULE; i++)
-    {
-        if (dataHeader[i].pkt_nsec > 999999999)
-            dataHeader[i].pkt_nsec = 999999999;
-        fprintf(f,
-                "   \"quabo_%1u\": { \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
-                i,
-                dataHeader[i].pkt_num,
-                dataHeader[i].pkt_tai,
-                dataHeader[i].pkt_nsec,
-                dataHeader[i].tv_sec,
-                dataHeader[i].tv_usec);
-        if (i < QUABO_PER_MODULE - 1)
-        {
-            fprintf(f, ", ");
-        }
-        fprintf(f, "\n");
-    }
-    fprintf(f, "}");
-    return 0;
-}
-
-// write data into img snapshot file
-static void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data)
-{
-    // move the pointer to the beginning,
-    // as we only need one pkt in the snapshot file.
-    fseek(fp, 0, SEEK_SET);
-    pff_start_json(fp);
-    write_img_snapshot_header(fp, header);
-    pff_end_json(fp);
-    pff_write_image(fp, PIXELS_PER_IMAGE * 2 * 4, data);
-    fflush(fp);
-    fsync(fileno(fp));
-}
 
 // Initialization function for Hashpipe.
 // This function is called once when the thread is created
