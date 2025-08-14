@@ -217,7 +217,7 @@ static void *run(hashpipe_thread_args_t *args)
     char ssdir[64];
     int ssint = 0;
     uint8_t imgbuf[2048];
-    unit8_t oimgbuf[512];
+    uint8_t oimgbuf[512];
     uint8_t quabo_num = 0;
     PACKET_HEADER imgheader[4];
 
@@ -242,8 +242,8 @@ static void *run(hashpipe_thread_args_t *args)
         hashpipe_pktsock_release_frame(p_frame);
     }
     // let's create snapshot files here
-    char ssmovie[64];
-    char ssph[64];
+    char ssmovie[128];
+    char ssph[128];
     snprintf(ssmovie, sizeof(ssmovie), "%s/module_0/obs_snapshot/start_0.img16.seqno_0.pff", ssdir);
     snprintf(ssph, sizeof(ssph), "%s/module_0/obs_snapshot/start_0.ph256.seqno_0.pff", ssdir);
     hashpipe_info(__FUNCTION__, "Movie snapshot: %s", ssmovie);
