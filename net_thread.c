@@ -262,9 +262,10 @@ static void *run(hashpipe_thread_args_t *args)
     FILE *mov16_fp = fopen(ssmovie, "w");
     FILE *ph_fp = fopen(ssph, "w");
 
+    // track last successful grpc snapshot send time
     struct timeval last_idle_check_time;
     gettimeofday(&last_idle_check_time, NULL);
-    
+
     //  Main Loop
     while (run_threads())
     {
@@ -360,6 +361,27 @@ static void *run(hashpipe_thread_args_t *args)
             }
 
             blockHeader->n_pkts_in_block++;
+
+            // check idle sockets to detect grpc re-init
+            struct timeval now;
+            gettimeofday(&now, NULL);
+            // Check every second to avoid excessive syscalls
+            if (timeval_diff(&last_idle_check_time, &now) > 1000) {
+                uds_connection_t* conn_iter = get_uds_connections_list_head();
+                for (; conn_iter != NULL; conn_iter = conn_iter->next) {
+                    if (conn_iter->fd >= 0) { // Only check active connections
+                        // If no successful write in the last 3 seconds, close the socket
+                        if (timeval_diff(&conn_iter->last_successful_write_time, &now) > 3000) {
+                            hashpipe_warn("net_thread",
+                                "UDS connection for %s has been idle for >3s. Forcing reconnect.",
+                                conn_iter->dp_name);
+                            close(conn_iter->fd);
+                            conn_iter->fd = -1; // Mark as disconnected
+                        }
+                    }
+                }
+                last_idle_check_time = now; // Update the check time
+            }
 
             // check the timestamp here;
             // then decide is we need to write the data into snapshot files.
