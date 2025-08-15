@@ -35,6 +35,7 @@ void WritePHSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data);
 * @param header Pointer to an array of 4 PACKET_HEADER structs.
 * @param data Pointer to the assembled image data.
 */
+void WriteImgSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data);
 
 /**
 * @brief Sends a single-packet pulse-height snapshot over a Unix Domain Socket.
