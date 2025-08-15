@@ -20,7 +20,7 @@
 #include "databuf.h" 
 
 // =====================================================================
-// Unified JSON Header Creation Functions
+// JSON Header Creation Functions
 // =====================================================================
 
 /**
@@ -83,7 +83,7 @@ static int sprint_img_snapshot_json(char* dest, size_t size, PACKET_HEADER* head
 }
 
 // =====================================================================
-// Filesystem Snapshot Functions (originally from net_thread.c)
+// Filesystem snapshot functions (originally from net_thread.c) 
 // =====================================================================
 
 
@@ -140,10 +140,8 @@ void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data) {
 
 
 // =====================================================================
-// UDS Snapshot Functions
+// UDS snapshot functions
 // =====================================================================
-
-
 
 static uds_connection_t *g_uds_connections = NULL;
 

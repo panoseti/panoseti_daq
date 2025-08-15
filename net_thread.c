@@ -253,14 +253,14 @@ static void *run(hashpipe_thread_args_t *args)
         hashpipe_pktsock_release_frame(p_frame);
     }
     // let's create snapshot files here
-    char ssmovie[128];
-    char ssph[128];
-    snprintf(ssmovie, sizeof(ssmovie), "%s/module_0/obs_snapshot/start_0.img16.seqno_0.pff", ssdir);
-    snprintf(ssph, sizeof(ssph), "%s/module_0/obs_snapshot/start_0.ph256.seqno_0.pff", ssdir);
-    hashpipe_info(__FUNCTION__, "Movie snapshot: %s", ssmovie);
-    hashpipe_info(__FUNCTION__, "PH snapshot: %s", ssph);
-    FILE *mov16_fp = fopen(ssmovie, "w");
-    FILE *ph_fp = fopen(ssph, "w");
+    // char ssmovie[128];
+    // char ssph[128];
+    // snprintf(ssmovie, sizeof(ssmovie), "%s/module_0/obs_snapshot/start_0.img16.seqno_0.pff", ssdir);
+    // snprintf(ssph, sizeof(ssph), "%s/module_0/obs_snapshot/start_0.ph256.seqno_0.pff", ssdir);
+    // hashpipe_info(__FUNCTION__, "Movie snapshot: %s", ssmovie);
+    // hashpipe_info(__FUNCTION__, "PH snapshot: %s", ssph);
+    // FILE *mov16_fp = fopen(ssmovie, "w");
+    // FILE *ph_fp = fopen(ssph, "w");
 
     // track last successful grpc snapshot send time
     struct timeval last_idle_check_time;
@@ -391,7 +391,7 @@ static void *run(hashpipe_thread_args_t *args)
                 tdiff = timeval_diff(&lastPHTime, &nowTime);
                 if (tdiff > ssint * 1000)
                 {
-                    WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
+                    // WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
                     WritePHSnapshotsToUds(DP_PH_256_IMG, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
                     lastPHTime.tv_sec = nowTime.tv_sec;
                     lastPHTime.tv_usec = nowTime.tv_usec;
@@ -416,7 +416,7 @@ static void *run(hashpipe_thread_args_t *args)
                     if (tdiff > ssint * 1000)
                     {
                         DATA_PRODUCT img_dp = (imgheader[0].acq_mode == 0x03) ? DP_BIT8_IMG : DP_BIT16_IMG;
-                        WriteImgSnapshots(mov16_fp, imgheader, imgbuf);
+                        // WriteImgSnapshots(mov16_fp, imgheader, imgbuf);
                         WriteImgSnapshotsToUds(img_dp, imgheader, imgbuf);
                         lastImg16Time.tv_sec = nowTime.tv_sec;
                         lastImg16Time.tv_usec = nowTime.tv_usec;
@@ -464,8 +464,8 @@ static void *run(hashpipe_thread_args_t *args)
     }
 
     // close the snapshot files
-    fclose(mov16_fp);
-    fclose(ph_fp);
+    // fclose(mov16_fp);
+    // fclose(ph_fp);
 
     pthread_cleanup_pop(1); // Closes push(hashpipe_pktsock_close)
     pthread_cleanup_pop(1); // Closes push(free)
