@@ -1,6 +1,7 @@
 #ifndef _SNAPSHOT_H_
 #define _SNAPSHOT_H_
 
+#include <sys/time.h>
 #include <stdio.h>
 #include <stdint.h>
 #include "databuf.h" 
@@ -9,6 +10,17 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define UDS_PATH_TEMPLATE "/tmp/hashpipe_grpc.dp_%s.sock"
+
+// Structure representing a Unix Domain Socket connection.
+typedef struct uds_connection {
+    char dp_name[16];
+    int fd; // The connected socket
+    char socket_path[128];
+    struct timeval last_successful_write_time;
+    struct uds_connection *next;
+} uds_connection_t;
 
 /**
  * @brief Gets the head of the list of Unix Domain Socket connections.

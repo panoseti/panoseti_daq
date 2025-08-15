@@ -143,15 +143,7 @@ void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data) {
 // UDS Snapshot Functions
 // =====================================================================
 
-#define UDS_PATH_TEMPLATE "/tmp/hashpipe_grpc.dp_%s.sock"
 
-typedef struct uds_connection {
-    char dp_name[16];
-    int fd; // The connected socket
-    char socket_path[128];
-    struct timeval last_successful_write_time;
-    struct uds_connection *next;
-} uds_connection_t;
 
 static uds_connection_t *g_uds_connections = NULL;
 
