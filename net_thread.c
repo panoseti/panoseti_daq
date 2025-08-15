@@ -261,6 +261,10 @@ static void *run(hashpipe_thread_args_t *args)
     hashpipe_info(__FUNCTION__, "PH snapshot: %s", ssph);
     FILE *mov16_fp = fopen(ssmovie, "w");
     FILE *ph_fp = fopen(ssph, "w");
+
+    struct timeval last_idle_check_time;
+    gettimeofday(&last_idle_check_time, NULL);
+    
     //  Main Loop
     while (run_threads())
     {

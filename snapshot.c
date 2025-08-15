@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <netinet/in.h> 
 #include <poll.h>
+#include <sys/time.h>
 
 #include "snapshot.h"
 #include "hashpipe.h"
@@ -148,6 +149,7 @@ typedef struct uds_connection {
     char dp_name[16];
     int fd; // The connected socket
     char socket_path[128];
+    struct timeval last_successful_write_time;
     struct uds_connection *next;
 } uds_connection_t;
 
@@ -215,10 +217,15 @@ static uds_connection_t* get_uds_connection(const char* dp_name) {
     conn->dp_name[sizeof(conn->dp_name) - 1] = '\0';
     conn->fd = -1;
     snprintf(conn->socket_path, sizeof(conn->socket_path), UDS_PATH_TEMPLATE, dp_name);
+    gettimeofday(&conn->last_successful_write_time, NULL); 
     conn->next = g_uds_connections;
     g_uds_connections = conn;
     hashpipe_info(__FUNCTION__, "Created UDS client manager for %s", conn->socket_path);
     return conn;
+}
+
+uds_connection_t* get_uds_connections_list_head(void) {
+    return g_uds_connections;
 }
 
 
@@ -285,6 +292,7 @@ static void WritePFFToUds(int module_id, DATA_PRODUCT dp, const char* json_doc, 
 
     if (bytes_sent >= 0) {
         // Data sent successfully.
+        gettimeofday(&conn->last_successful_write_time, NULL);
         return;
     }
 
