@@ -366,12 +366,12 @@ static void *run(hashpipe_thread_args_t *args)
             struct timeval now;
             gettimeofday(&now, NULL);
             // Check every second to avoid excessive syscalls
-            if (timeval_diff(&last_idle_check_time, &now) > 1000) {
+            if (timeval_diff(&last_idle_check_time, &now) > UDS_IDLE_CHECK_PERIOD_US) {
                 uds_connection_t* conn_iter = get_uds_connections_list_head();
                 for (; conn_iter != NULL; conn_iter = conn_iter->next) {
                     if (conn_iter->fd >= 0) { // Only check active connections
                         // If no successful write in the last 3 seconds, close the socket
-                        if (timeval_diff(&conn_iter->last_successful_write_time, &now) > 3000) {
+                        if (timeval_diff(&conn_iter->last_successful_write_time, &now) > UDS_CONNECTION_TIMEOUT_US) {
                             hashpipe_warn("net_thread",
                                 "UDS connection for %s has been idle for >3s. Forcing reconnect.",
                                 conn_iter->dp_name);

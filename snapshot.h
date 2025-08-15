@@ -11,6 +11,11 @@
 extern "C" {
 #endif
 
+// Timeout for UDS connections
+#define UDS_CONNECTION_TIMEOUT_US 5000000  // 5 seconds
+// UDS socket idle check period
+#define UDS_IDLE_CHECK_PERIOD_US 1000000    // 1 second
+
 #define UDS_PATH_TEMPLATE "/tmp/hashpipe_grpc.dp_%s.sock"
 
 // Structure representing a Unix Domain Socket connection.
