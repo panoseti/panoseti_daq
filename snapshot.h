@@ -11,6 +11,13 @@ extern "C" {
 #endif
 
 /**
+ * @brief Gets the head of the list of Unix Domain Socket connections.
+ *
+ * @return Pointer to the head of the list of UDS connections.
+ */
+uds_connection_t* get_uds_connections_list_head();
+
+/**
  * @brief Writes a four-packet image snapshot to a filesystem file.
  *
  * @param fp Pointer to the file to write to.
