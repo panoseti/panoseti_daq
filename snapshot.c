@@ -146,7 +146,9 @@ void WritePHSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data) {
     pff_end_json(fp);
     pff_write_image(fp, PIXELS_PER_IMAGE * 2, data);
     fflush(fp);
-    ftruncate(fileno(fp), ftell(fp));
+    if (ftruncate(fileno(fp), ftell(fp)) < 0) {
+        hashpipe_error(__FUNCTION__, "Failed to truncate PH snapshot file");
+    }
     fsync(fileno(fp));
 }
 
@@ -170,7 +172,9 @@ void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data) {
     pff_end_json(fp);
     pff_write_image(fp, BYTES_PER_MODULE_FRAME, data);
     fflush(fp);
-    ftruncate(fileno(fp), ftell(fp));
+    if (ftruncate(fileno(fp), ftell(fp)) < 0) {
+        hashpipe_error(__FUNCTION__, "Failed to truncate Img snapshot file");
+    }
     fsync(fileno(fp));
 }
 
@@ -223,6 +227,7 @@ static void uds_connect(uds_connection_t* conn) {
 
 // Gets a connection manager for a given data product.
 static uds_connection_t* get_uds_connection(const char* dp_name) {
+    hashpipe_info(__FUNCTION__, "Getting UDS connection for %s", dp_name);
     uds_connection_t* conn;
     for (conn = g_uds_connections; conn != NULL; conn = conn->next) {
         if (strcmp(conn->dp_name, dp_name) == 0) {
