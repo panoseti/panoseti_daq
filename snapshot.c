@@ -80,48 +80,6 @@ static int sprint_img_snapshot_json(char* dest, size_t size, PACKET_HEADER* head
     return (p - dest);
 }
 
-// // Helper to write a single PH packet header to a JSON object in a file.
-// static int write_ph_snapshot_header(FILE *f, PACKET_HEADER *dataHeader)
-// {
-//     if (dataHeader->pkt_nsec > 999999999)
-//         dataHeader->pkt_nsec = 999999999;
-//     fprintf(f,
-//             "{ \"quabo_num\": %1u, \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
-//             dataHeader->quabo_num,
-//             dataHeader->pkt_num,
-//             dataHeader->pkt_tai,
-//             dataHeader->pkt_nsec,
-//             dataHeader->tv_sec,
-//             dataHeader->tv_usec);
-//     return 0;
-// }
-// // Helper to write four image packet headers to a JSON object in a file.
-// int write_img_snapshot_header(FILE *f, PACKET_HEADER *dataHeader)
-// {
-//     fprintf(f, "{\n");
-//     for (int i = 0; i < QUABO_PER_MODULE; i++)
-//     {
-//         if (dataHeader[i].pkt_nsec > 999999999)
-//             dataHeader[i].pkt_nsec = 999999999;
-//         fprintf(f,
-//                 "   \"quabo_%1u\": { \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
-//                 i,
-//                 dataHeader[i].pkt_num,
-//                 dataHeader[i].pkt_tai,
-//                 dataHeader[i].pkt_nsec,
-//                 dataHeader[i].tv_sec,
-//                 dataHeader[i].tv_usec);
-//         if (i < QUABO_PER_MODULE - 1)
-//         {
-//             fprintf(f, ", ");
-//         }
-//         fprintf(f, "\n");
-//     }
-//     fprintf(f, "}");
-//     return 0;
-// }
-
-
 // =====================================================================
 // Filesystem Snapshot Functions (originally from net_thread.c)
 // =====================================================================
@@ -208,7 +166,20 @@ const char* uds_dp_to_str(DATA_PRODUCT dp) {
 static void uds_connect(uds_connection_t* conn) {
     if (conn->fd >= 0) {
         close(conn->fd);
+        conn->fd = -1;
     }
+
+    // Check for the socket file's existence
+    struct stat buffer;
+    if (stat(conn->socket_path, &buffer) != 0) {
+        if (errno == ENOENT) {
+            // This is expected if the server is down, so no warning is needed unless debugging
+            //hashpipe_info(__FUNCTION__, "Socket file %s not found. Will retry.", conn->socket_path);
+        }
+        return; 
+    }
+
+    // Open the UDS in non-blocking streaming mode
     conn->fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (conn->fd < 0) return;
     int flags = fcntl(conn->fd, F_GETFL, 0);
@@ -249,30 +220,36 @@ static uds_connection_t* get_uds_connection(const char* dp_name) {
     return conn;
 }
 
+
 static void WritePFFToUds(int module_id, DATA_PRODUCT dp, const char* json_doc, const void* image_data, size_t image_bytes) {
     const char* dp_name = uds_dp_to_str(dp);
     uds_connection_t* conn = get_uds_connection(dp_name);
-    if (conn == NULL) return;
+    if (conn == NULL) return; // Should not happen
 
+    // If not connected, attempt a single non-blocking connection.
     if (conn->fd < 0) {
         uds_connect(conn);
-        if (conn->fd < 0) return; // Connection failed, drop frame and retry next time.
+        // If the connection attempt fails, drop the frame and return immediately.
+        // The next call to this function will try to connect again.
+        if (conn->fd < 0) {
+            return;
+        }
     }
 
-    // Prepare the 4 parts of the message for writev
+    // Prepare message for writev
     struct iovec iov[4];
-    char separator[] = "\n\n*";
-    
+
     // Part 1: 2-byte module ID in network byte order (big-endian)
     uint16_t net_module_id = htons((uint16_t)module_id);
     iov[0].iov_base = &net_module_id;
     iov[0].iov_len = sizeof(net_module_id);
-
+    
     // Part 2: JSON header
     iov[1].iov_base = (void*)json_doc;
     iov[1].iov_len = strlen(json_doc);
-
+    
     // Part 3: Separator
+    char separator[] = "\n\n*";
     iov[2].iov_base = separator;
     iov[2].iov_len = 3;
 
@@ -282,34 +259,55 @@ static void WritePFFToUds(int module_id, DATA_PRODUCT dp, const char* json_doc, 
 
     ssize_t bytes_sent = writev(conn->fd, iov, 4);
 
-    if (bytes_sent < 0) {
-        if (errno == EPIPE || errno == ECONNRESET) {
-            hashpipe_warn(__FUNCTION__, "UDS connection to %s reset. Will reconnect.", conn->socket_path);
-            close(conn->fd);
-            conn->fd = -1;
-        }
-        // For EAGAIN/EWOULDBLOCK, silently drop frame.
+    if (bytes_sent >= 0) {
+        // Data sent successfully.
+        return;
     }
+
+    // If writev failed, handle the error without blocking.
+    if (errno == EPIPE || errno == ECONNRESET || errno == EBADF) {
+        // The server has closed the connection. Clean up our end.
+        hashpipe_warn(__FUNCTION__, "UDS connection to %s lost. Closing fd.", conn->socket_path);
+        close(conn->fd);
+        conn->fd = -1; // Mark as disconnected for the next attempt.
+    } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        // The socket's buffer is full. The server is alive but busy.
+        hashpipe_warn(__FUNCTION__, "UDS socket for %s is busy. Dropping frame.", conn->socket_path);
+    } else {
+        // An unexpected error occurred. Close the connection to be safe.
+        hashpipe_error(__FUNCTION__, "Unexpected UDS error on %s: %s. Closing fd.", conn->socket_path, strerror(errno));
+        close(conn->fd);
+        conn->fd = -1;
+    }
+    // In all error cases, we drop the frame and return immediately.
 }
 
 
-void WritePHSnapshotsToUds(PACKET_HEADER *header, uint8_t *data) {
+void WritePHSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data) {
     if (!header || !data) return;
     char json_buffer[1024];
 
+    // Determine data size based on data product
+    size_t image_bytes = PIXELS_PER_IMAGE * bytes_per_pixel(dp);
+
     if (sprint_ph_snapshot_json(json_buffer, sizeof(json_buffer), header) > 0) {
-        WritePFFToUds(header->mod_num, DP_PH_256_IMG, json_buffer, data, PIXELS_PER_IMAGE * 2);
+        // Pass the dp and calculated size to the generic writer function
+        WritePFFToUds(header->mod_num, dp, json_buffer, data, image_bytes);
     } else {
         hashpipe_error(__FUNCTION__, "Failed to sprint PH snapshot JSON for UDS");
     }
 }
 
-void WriteImgSnapshotsToUds(PACKET_HEADER *header, uint8_t *data) {
+void WriteImgSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data) {
     if (!header || !data) return;
     char json_buffer[4096];
 
+    // Determine data size based on data product
+    size_t image_bytes = QUABO_PER_MODULE * PIXELS_PER_IMAGE * bytes_per_pixel(dp);
+
     if (sprint_img_snapshot_json(json_buffer, sizeof(json_buffer), header) > 0) {
-        WritePFFToUds(header[0].mod_num, DP_BIT16_IMG, json_buffer, data, BYTES_PER_MODULE_FRAME);
+        // Pass the dp and calculated size to the generic writer function
+        WritePFFToUds(header[0].mod_num, dp, json_buffer, data, image_bytes);
     } else {
         hashpipe_error(__FUNCTION__, "Failed to sprint Img snapshot JSON for UDS");
     }

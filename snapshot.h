@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "databuf.h" 
+#include "pff.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,20 +29,21 @@ void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data);
 void WritePHSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data);
 
 /**
- * @brief Sends a four-packet image snapshot over a Unix Domain Socket.
- *
- * @param header Pointer to an array of 4 PACKET_HEADER structs.
- * @param data Pointer to the assembled image data (2048 bytes).
- */
-void WriteImgSnapshotsToUds(PACKET_HEADER *header, uint8_t *data);
+* @brief Sends a four-packet image snapshot over a Unix Domain Socket.
+*
+* @param dp The specific data product type (e.g., DP_BIT16_IMG, DP_BIT8_IMG).
+* @param header Pointer to an array of 4 PACKET_HEADER structs.
+* @param data Pointer to the assembled image data.
+*/
 
 /**
- * @brief Sends a single-packet pulse-height snapshot over a Unix Domain Socket.
- *
- * @param header Pointer to the packet's header.
- * @param data Pointer to the pulse-height image data (512 bytes).
- */
-void WritePHSnapshotsToUds(PACKET_HEADER *header, uint8_t *data);
+* @brief Sends a single-packet pulse-height snapshot over a Unix Domain Socket.
+*
+* @param dp The specific data product type (e.g., DP_PH_256_IMG).
+* @param header Pointer to the packet's header.
+* @param data Pointer to the pulse-height image data (512 bytes).
+*/
+void WritePHSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data);
 
 #ifdef __cplusplus
 }

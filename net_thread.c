@@ -179,6 +179,16 @@ void INThandler(int signum)
     INTSIG = 1;
 }
 
+// Handle SIGPIPE signal: expected when the grpc server is re-initialized mid-observation
+void SIGPIPEhandler(int signum)
+{
+    char buffer[sizeof "2011-10-08T07:07:09Z"];
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    strftime(buffer, sizeof buffer, "%Y-%m-%dT%H:%M:%S%z", tm_info);
+    hashpipe_info(__FUNCTION__, "SIGPIPE received at %s\n", buffer);
+}
+
 // main function for network thread.
 // make sure to use a while loop.
 // args: Arguments passed in by the hashpipe framework
@@ -186,6 +196,7 @@ void INThandler(int signum)
 static void *run(hashpipe_thread_args_t *args)
 {
     signal(SIGINT, INThandler);
+    signal(SIGPIPE, SIGPIPEhandler);
     INTSIG = 0;
 
     printf("\n---------------Running Input Thread-----------------\n\n");
@@ -355,7 +366,7 @@ static void *run(hashpipe_thread_args_t *args)
                 if (tdiff > ssint * 1000)
                 {
                     WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
-                    WritePHSnapshotsToUds(&blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
+                    WritePHSnapshotsToUds(DP_PH_256_IMG, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
                     lastPHTime.tv_sec = nowTime.tv_sec;
                     lastPHTime.tv_usec = nowTime.tv_usec;
                 }
@@ -378,8 +389,9 @@ static void *run(hashpipe_thread_args_t *args)
                     tdiff = timeval_diff(&lastImg16Time, &nowTime);
                     if (tdiff > ssint * 1000)
                     {
+                        DATA_PRODUCT img_dp = (imgheader[0].acq_mode == 0x03) ? DP_BIT8_IMG : DP_BIT16_IMG;
                         WriteImgSnapshots(mov16_fp, imgheader, imgbuf);
-                        WriteImgSnapshotsToUds(imgheader, imgbuf);
+                        WriteImgSnapshotsToUds(img_dp, imgheader, imgbuf);
                         lastImg16Time.tv_sec = nowTime.tv_sec;
                         lastImg16Time.tv_usec = nowTime.tv_usec;
                     }
