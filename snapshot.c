@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <netinet/in.h> 
+#include <poll.h>
 
 #include "snapshot.h"
 #include "hashpipe.h"
@@ -69,7 +70,7 @@ static int sprint_img_snapshot_json(char* dest, size_t size, PACKET_HEADER* head
             pkt_nsec,
             head[i].tv_sec,
             head[i].tv_usec,
-            (i < QUABO_PER_MODULE - 1) ? "," : "" // Standardized comma
+            (i < QUABO_PER_MODULE - 1) ? "," : "" 
         );
         if (n < 0 || n >= rem) return 0; p += n; rem -= n;
     }
@@ -236,6 +237,29 @@ static void WritePFFToUds(int module_id, DATA_PRODUCT dp, const char* json_doc, 
         }
     }
 
+    // Health check
+    struct pollfd pfd;
+    pfd.fd = conn->fd;
+    pfd.events = POLLOUT; // Check if the socket is writable
+
+    int poll_ret = poll(&pfd, 1, 0); // 0-timeout for a non-blocking check
+
+    if (poll_ret < 0) {
+        // Poll itself failed
+        hashpipe_error(__FUNCTION__, "UDS poll error on %s: %s. Closing fd.", conn->socket_path, strerror(errno));
+        close(conn->fd);
+        conn->fd = -1;
+        return; // Drop frame
+    }
+
+    if (poll_ret > 0 && (pfd.revents & (POLLERR | POLLHUP))) {
+        // The server has hung up or an error occurred. The socket is dead.
+        hashpipe_warn(__FUNCTION__, "UDS connection to %s is broken (POLLERR/HUP). Closing fd.", conn->socket_path);
+        close(conn->fd);
+        conn->fd = -1;
+        return; // Drop frame, will try to reconnect on next call
+    }
+
     // Prepare message for writev
     struct iovec iov[4];
 
@@ -267,7 +291,7 @@ static void WritePFFToUds(int module_id, DATA_PRODUCT dp, const char* json_doc, 
     // If writev failed, handle the error without blocking.
     if (errno == EPIPE || errno == ECONNRESET || errno == EBADF) {
         // The server has closed the connection. Clean up our end.
-        hashpipe_warn(__FUNCTION__, "UDS connection to %s lost. Closing fd.", conn->socket_path);
+        hashpipe_warn(__FUNCTION__, "UDS connection to %s lost (writev). Closing fd.", conn->socket_path);
         close(conn->fd);
         conn->fd = -1; // Mark as disconnected for the next attempt.
     } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -275,7 +299,7 @@ static void WritePFFToUds(int module_id, DATA_PRODUCT dp, const char* json_doc, 
         hashpipe_warn(__FUNCTION__, "UDS socket for %s is busy. Dropping frame.", conn->socket_path);
     } else {
         // An unexpected error occurred. Close the connection to be safe.
-        hashpipe_error(__FUNCTION__, "Unexpected UDS error on %s: %s. Closing fd.", conn->socket_path, strerror(errno));
+        hashpipe_error(__FUNCTION__, "Unexpected UDS writev error on %s: %s. Closing fd.", conn->socket_path, strerror(errno));
         close(conn->fd);
         conn->fd = -1;
     }
