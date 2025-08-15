@@ -13,10 +13,11 @@ SOURCES  = net_thread.c \
     output_thread.c \
     process_frame.c \
     databuf.c \
+    snapshot.c \
     ./util/pff.cpp \
 	./util/image.cpp
 
-INCLUDES = databuf.h compute_thread.h process_frame.h
+INCLUDES = databuf.h compute_thread.h process_frame.h snapshot.h
 
 N_INPUT_BLOCKS=512
 N_OUTPUT_BLOCKS=128
