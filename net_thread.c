@@ -355,6 +355,7 @@ static void *run(hashpipe_thread_args_t *args)
                 if (tdiff > ssint * 1000)
                 {
                     WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
+                    WritePHSnapshotsToUds(&blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
                     lastPHTime.tv_sec = nowTime.tv_sec;
                     lastPHTime.tv_usec = nowTime.tv_usec;
                 }
@@ -378,6 +379,7 @@ static void *run(hashpipe_thread_args_t *args)
                     if (tdiff > ssint * 1000)
                     {
                         WriteImgSnapshots(mov16_fp, imgheader, imgbuf);
+                        WriteImgSnapshotsToUds(imgheader, imgbuf);
                         lastImg16Time.tv_sec = nowTime.tv_sec;
                         lastImg16Time.tv_usec = nowTime.tv_usec;
                     }
