@@ -17,19 +17,13 @@
 #include <errno.h>
 
 #include "hashpipe.h"
-
 #include "databuf.h"
 #include "snapshot.h"
 #include "pff.h"
 #include "dp.h"
 #include "image.h"
+#include "net_thread.h"
 
-// PKTSOCK Params
-// (These should be only changed with caution as it need to change with MMAP)
-#define PKTSOCK_BYTES_PER_FRAME (1024)
-#define PKTSOCK_FRAMES_PER_BLOCK (4096)
-#define PKTSOCK_NBLOCKS (512)
-#define PKTSOCK_NFRAMES (PKTSOCK_FRAMES_PER_BLOCK * PKTSOCK_NBLOCKS)
 
 // get the time difference
 static uint64_t timeval_diff(struct timeval *start, struct timeval *end)

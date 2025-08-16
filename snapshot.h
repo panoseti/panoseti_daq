@@ -1,7 +1,6 @@
 #ifndef _SNAPSHOT_H_
 #define _SNAPSHOT_H_
 
-#include <sys/time.h>
 #include <stdio.h>
 #include <stdint.h>
 #include "databuf.h" 
