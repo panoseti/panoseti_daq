@@ -191,13 +191,13 @@ static void uds_connect(uds_connection_t* conn) {
 
 // Gets a connection manager for a given data product.
 static uds_connection_t* get_uds_connection(const char* dp_name) {
-    hashpipe_info(__FUNCTION__, "Getting UDS connection for %s", dp_name);
     uds_connection_t* conn;
     for (conn = g_uds_connections; conn != NULL; conn = conn->next) {
         if (strcmp(conn->dp_name, dp_name) == 0) {
             return conn;
         }
     }
+    hashpipe_info(__FUNCTION__, "Attempting to create a new UDS client manager for %s", dp_name);
     conn = (uds_connection_t*)malloc(sizeof(uds_connection_t));
     if (conn == NULL) {
         hashpipe_error(__FUNCTION__, "Failed to allocate UDS connection memory");
