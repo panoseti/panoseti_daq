@@ -35,8 +35,8 @@ def test_hashpipe_valid(daq_env):
     for _ in range(10):
         assert is_hashpipe_running(), "Hashpipe process should be running."
         print_status()
-        time.sleep(1)
-    assert is_hashpipe_running(), "Hashpipe process should still be running after 10 seconds."
+        time.sleep(2)
+    assert is_hashpipe_running(), "Hashpipe process should still be running after 20 seconds."
 
 def _latest_pff_mtime(mod_run: Path):
     pffs = list(mod_run.glob("*.pff"))

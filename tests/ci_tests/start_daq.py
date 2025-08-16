@@ -99,7 +99,7 @@ def main():
         close_fds=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        # stderr=subprocess.DEVNULL,
     )
 
     # Build expected tokens to identify the hashpipe process reliably

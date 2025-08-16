@@ -103,10 +103,10 @@ def daq_env():
     uds_mgr = UdsServerManager(uds_paths)
     uds_mgr.start()
 
-    # 1) Start tcpreplay (loop indefinitely at 1 Mbps to lo)
+    # 1) Start tcpreplay (loop indefinitely at 5 Mbps to lo)
     tcpreplay_cmd = [
         "tcpreplay",
-        "--mbps=1",
+        "--mbps=5",
         "--loop=0",
         "--intf1=lo",
         PCAP_FILE,
@@ -118,7 +118,7 @@ def daq_env():
         sys.executable,
         "/app/tests/ci_tests/start_daq.py",
         "--run_dir", str(BASE_DIR),
-        "--max_file_size_mb", "1",
+        "--max_file_size_mb", "5",
         "--bindhost", "lo",
     ]
     for mid in MODULE_IDS:
