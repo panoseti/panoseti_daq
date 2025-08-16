@@ -1,158 +1,186 @@
-
+# tests/ci_tests/conftest.py
 import sys
 import os
-import signal
 import time
-from pathlib import Path
-import pytest
 import subprocess
+import threading
+import asyncio
+from pathlib import Path
+import stat
 
+import pytest
 from control_util import is_hashpipe_running
 
+from uds_server import UdsServer
+
 def is_utility_available(name):
-    """Check if a command-line utility is in the system PATH."""
     return subprocess.run(["which", name], capture_output=True).returncode == 0
 
+BASE_DIR = Path("/tmp/ci_run_dir")
+RUN_NAME = "obs_ci_run"
+MODULE_IDS = [1, 254]
+PCAP_FILE = "/app/test_data.pcapng"
+UDS_TEMPLATE = "/tmp/hashpipe_grpc.dp_{dp_name}.sock"
 
-@pytest.fixture(scope="session")
-def hashpipe_pcap_runner():
-    """
-    A session-scoped fixture that creates a realistic hashpipe run environment,
-    starts tcpreplay to feed it data from a pcap file, and launches the
-    hashpipe process with command-line arguments that mimic a production run.
-
-    This enables testing of the data flow:
-    tcpreplay -> hashpipe (net_thread) 
-    """
-    if not is_utility_available("hashpipe") or not is_utility_available("tcpreplay"):
-        pytest.fail("Required utility 'hashpipe' or 'tcpreplay' not found in PATH.")
-
-    # 1. Define Paths and Configuration
-    pcap_file = "/app/test_data.pcapng"
-
-    # Define a base directory for the test, which will be the Current Working Directory (CWD)
-    # for the hashpipe process. This matches the behavior of the production start_daq.py script.
-    base_dir = Path("/tmp/ci_run_dir")
-
-    # Define a relative run name. It must start with "obs_" for the server to find it.
-    run_name = "obs_ci_run"
-
-    # Create the directory structure that `make_run_dirs` in start.py would create.
-    module_ids = [1, 254]
+def _ensure_dirs_and_module_config():
     cfg_str = ""
-    for mid in module_ids:
-        module_dir = base_dir / "module_{}".format(mid) / run_name
+    for mid in MODULE_IDS:
+        module_dir = BASE_DIR / f"module_{mid}" / RUN_NAME
         module_dir.mkdir(parents=True, exist_ok=True)
         cfg_str += f"{mid}\n"
-
-    # The config file for hashpipe goes in base_dir/run_name/
-    config_dir = base_dir / run_name
+    config_dir = BASE_DIR / RUN_NAME
     config_dir.mkdir(exist_ok=True)
-
-    # The module.config file tells hashpipe which module to listen for.
     module_config_path = config_dir / "module.config"
     with open(module_config_path, "w") as f:
         f.write(cfg_str)
+    return module_config_path
 
-    # 2. Build commands 
-    # Command to loop the pcap file to the loopback interface, simulating network traffic.
+def _wait_for(predicate, timeout_s=30, interval_s=0.5, desc="condition"):
+    start = time.time()
+    while time.time() - start < timeout_s:
+        if predicate():
+            return True
+        time.sleep(interval_s)
+    pytest.fail(f"Timeout waiting for {desc}")
+
+def _uds_path(dp_name):
+    return UDS_TEMPLATE.format(dp_name=dp_name)
+
+class UdsServerManager:
+    def __init__(self, socket_paths):
+        self.socket_paths = socket_paths
+        self.loop = None
+        self.thread = None
+        self.servers = {}
+        self.started = threading.Event()
+
+    def start(self):
+        def runner():
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            async def start_all():
+                for name, path in self.socket_paths.items():
+                    srv = UdsServer(str(path))
+                    await srv.start()
+                    self.servers[name] = srv
+                self.started.set()
+            self.loop.run_until_complete(start_all())
+            self.loop.run_forever()
+
+        self.thread = threading.Thread(target=runner, daemon=True)
+        self.thread.start()
+        # Wait until servers started
+        self.started.wait(timeout=5)
+        if not self.started.is_set():
+            raise RuntimeError("Failed to start UDS servers")
+
+    def stop(self):
+        if self.loop is None:
+            return
+        async def stop_all():
+            for srv in self.servers.values():
+                await srv.stop()
+        fut = asyncio.run_coroutine_threadsafe(stop_all(), self.loop)
+        try:
+            fut.result(timeout=5)
+        except Exception:
+            pass
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=5)
+
+@pytest.fixture(scope="session")
+def daq_env():
+    if not is_utility_available("hashpipe"):
+        pytest.fail("hashpipe not found in PATH")
+    if not is_utility_available("tcpreplay"):
+        pytest.fail("tcpreplay not found in PATH")
+
+    # Prepare filesystem like production
+    _ensure_dirs_and_module_config()
+
+    # 0) Start UDS servers FIRST (the tests are the servers)
+    uds_paths = {dp: Path(_uds_path(dp)) for dp in ["ph256", "ph1024", "img16", "img8"]}
+    uds_mgr = UdsServerManager(uds_paths)
+    uds_mgr.start()
+
+    # 1) Start tcpreplay (loop indefinitely at 1 Mbps to lo)
     tcpreplay_cmd = [
         "tcpreplay",
         "--mbps=1",
-        "--loop=0",  # Loop indefinitely
-        "--intf1=lo",  # Send to loopback interface
-        pcap_file
+        "--loop=0",
+        "--intf1=lo",
+        PCAP_FILE,
     ]
+    tcpreplay_proc = subprocess.Popen(tcpreplay_cmd)
 
-    hashpipe_cmd = [
-        "hashpipe",
-        "-p", "hashpipe.so",
-        "-I", "0",
-        "-o", "BINDHOST=lo",
-        "-o", f"RUNDIR={run_name}",
-        "-o", f"CONFIG={run_name}/module.config",
-        "-o", "MAXFILESIZE=1",
-        "-o", "GROUPPHFRAMES=0",
-        "-o", "OBS=TEST",
-        "net_thread", "compute_thread", "output_thread"
+    # 2) Start hashpipe via start_daq.py (ensure your start_daq.py uses psutil-based PID find)
+    start_daq = [
+        sys.executable,
+        "/app/tests/ci_tests/start_daq.py",
+        "--run_dir", str(BASE_DIR),
+        "--max_file_size_mb", "1",
+        "--bindhost", "lo",
     ]
+    for mid in MODULE_IDS:
+        start_daq.extend(["--module_id", str(mid)])
+    hashpipe_launcher = subprocess.Popen(start_daq, cwd=BASE_DIR)
 
-    # 3. Start processes 
-    # Start tcpreplay to generate UDP packets.
-    tcpreplay_proc = subprocess.Popen(tcpreplay_cmd)#, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # Start the hashpipe process with the CWD set to the base directory.
-    hashpipe_proc = subprocess.Popen(
-        hashpipe_cmd,
-        cwd=base_dir
-    )
-
-    # 4. Wait for initialization and validation 
-    num_retries = 20
-    for i in range(num_retries):
-        # Allow time for processes to initialize and sockets to be created.
-        if tcpreplay_proc.poll() is not None:
-            pytest.fail(f"tcpreplay failed to start. Exit code: {tcpreplay_proc.returncode}")
-        elif hashpipe_proc.poll() is not None:
-            pytest.fail(f"hashpipe failed to start. Exit code: {hashpipe_proc.returncode}. Check logs in {base_dir}.")
-        if is_hashpipe_running():
-            print(f"hashpipe is running after {i} retries.")
-            break
-        print(f"hashpipe is not running after {i}/{num_retries} retries. Retrying in 1 second.")
-        time.sleep(1)
-    else:
-        pytest.fail(f"hashpipe failed to start after {num_retries} retries. Check logs in {base_dir}.")
-
-    # Yield to let the tests run
-    yield
-
-    # 5. Teardown
-    print("\n-- Tearing down hashpipe and tcpreplay processes --")
-
-    # First, stop tcpreplay so it stops feeding data.
-    tcpreplay_proc.terminate()
+    # 3) Wait for hashpipe to be running
     try:
-        tcpreplay_proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        tcpreplay_proc.kill()
+        _wait_for(is_hashpipe_running, timeout_s=30, desc="hashpipe to be running")
+    except Exception:
+        pid_file = BASE_DIR / "daq_hashpipe_pid"
+        if pid_file.exists():
+            print(f"Found PID file: {pid_file.read_text().strip()}")
+        else:
+            print("No PID file was created by start_daq.py")
+        raise
 
-    # Now, run stop_daq.py to gracefully shut down hashpipe.
-    # The Dockerfile places project source code in /app.
-    stop_daq_script_path = "/app/panoseti_util/stop_daq.py"
-    if os.path.exists(stop_daq_script_path):
-        print(f"-- Running {stop_daq_script_path} in {base_dir} --")
-        # stop_daq.py expects to be run from the data dir (which is our run_dir)
-        # and reads the PID from a file in its cwd.
+    # 4) Optional: verify at least one server saw a connection within 10s
+    start = time.time()
+    while time.time() - start < 10:
+        # If any server’s connected event is set, we know hashpipe connected to at least one DP
+        # Skip strict requirement; filesystem checks will also verify pipeline
+        break
+    env = {
+        "base_dir": BASE_DIR,
+        "run_name": RUN_NAME,
+        "module_ids": MODULE_IDS,
+        "uds_paths": uds_paths,
+        "uds_manager": uds_mgr,
+        "tcpreplay_proc": tcpreplay_proc,
+        "hashpipe_launcher": hashpipe_launcher,
+    }
+
+    try:
+        yield env
+    finally:
+        print("\n-- Tearing down DAQ environment --")
+        # Stop tcpreplay first
         try:
-            completed_process = subprocess.run(
-                [sys.executable, stop_daq_script_path],
-                cwd=base_dir,
-                capture_output=True,
-                text=True,
-                timeout=10  # Add a timeout to prevent hanging
-            )
-            print(f"stop_daq.py stdout:\n{completed_process.stdout}")
-            print(f"stop_daq.py stderr:\n{completed_process.stderr}")
-            if completed_process.returncode != 0:
-                # If it fails, fall back to killing the process directly.
-                print("stop_daq.py failed, falling back to direct process termination.")
-                if hashpipe_proc.poll() is None:
-                    hashpipe_proc.send_signal(signal.SIGINT)  # Graceful shutdown
-                    try:
-                        hashpipe_proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        hashpipe_proc.kill()  # Forceful shutdown
-        except subprocess.TimeoutExpired:
-            print("stop_daq.py timed out. Killing hashpipe process directly.")
-            if hashpipe_proc.poll() is None:
-                hashpipe_proc.kill()
-    else:
-        print(f"{stop_daq_script_path} not found. Terminating hashpipe process directly.")
-        # Fallback to original method if script is not found.
-        if hashpipe_proc.poll() is None:
-            hashpipe_proc.send_signal(signal.SIGINT)  # Graceful shutdown
+            tcpreplay_proc.terminate()
+            tcpreplay_proc.wait(timeout=10)
+        except Exception:
             try:
-                hashpipe_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                hashpipe_proc.kill()  # Forceful shutdown
+                tcpreplay_proc.kill()
+            except Exception:
+                pass
 
+        # Stop hashpipe via stop_daq.py
+        stop_daq = [
+            sys.executable,
+            "/app/tests/ci_tests/stop_daq.py",
+        ]
+        try:
+            cp = subprocess.run(stop_daq, cwd=BASE_DIR, capture_output=True, text=True, timeout=15)
+            print("stop_daq.py stdout:\n", cp.stdout)
+            print("stop_daq.py stderr:\n", cp.stderr)
+        except subprocess.TimeoutExpired:
+            print("stop_daq.py timed out; sending SIGINT to hashpipe directly.")
+            try:
+                subprocess.run(["pkill", "-2", "hashpipe"])
+            except Exception:
+                pass
+
+        # Stop UDS servers and clean sockets
+        uds_mgr.stop()

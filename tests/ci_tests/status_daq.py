@@ -60,6 +60,7 @@ def status():
         vols[name] = vol
 
     x['vols'] = vols
-    print(json.dumps(x))
+    return x
+    # print(json.dumps(x))
 
 status()
