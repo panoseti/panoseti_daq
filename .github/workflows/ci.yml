@@ -8,29 +8,44 @@ on:
 
 jobs:
   compile-test:
-    name: Test compilation and simple functionality
+    name: Test compilation and individual test files
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
-      - name: Build and cache Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./tests/ci_tests/Dockerfile
-          load: true
-          tags: panoseti-daq:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+    - name: Build and cache Docker image
+      id: build_image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./tests/ci_tests/Dockerfile
+        load: true
+        tags: panoseti-daq:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
-      - name: Run Hashpipe in a container
-        run: |
-          docker run --rm \
-            --shm-size=2g \
-            panoseti-daq:latest \
-            python3 -m pytest -s -v --maxfail=2 tests/ci_tests/
+    # Individual test file runs for better granularity
+    - name: Run test_can_hashpipe_init.py
+      run: |
+        docker run --rm --shm-size=2g panoseti-daq:latest \
+          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_can_hashpipe_init.py
 
+    - name: Run test_pff_header_consistency.py
+      run: |
+        docker run --rm --shm-size=2g panoseti-daq:latest \
+          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_pff_header_consistency.py
+
+    - name: Run test_uds_data_path.py
+      run: |
+        docker run --rm --shm-size=2g panoseti-daq:latest \
+          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_uds_data_path.py
+
+    - name: Run test_uds_resilience.py
+      run: |
+        docker run --rm --shm-size=2g panoseti-daq:latest \
+          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_uds_resilience.py

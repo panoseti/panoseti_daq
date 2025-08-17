@@ -1,4 +1,5 @@
 # tests/ci_tests/conftest.py
+
 import sys
 import os
 import time
@@ -7,10 +8,9 @@ import threading
 import asyncio
 from pathlib import Path
 import stat
-
 import pytest
-from control_util import is_hashpipe_running
 
+from control_util import is_hashpipe_running
 from uds_server import UdsServer
 
 def is_utility_available(name):
@@ -28,6 +28,7 @@ def _ensure_dirs_and_module_config():
         module_dir = BASE_DIR / f"module_{mid}" / RUN_NAME
         module_dir.mkdir(parents=True, exist_ok=True)
         cfg_str += f"{mid}\n"
+    
     config_dir = BASE_DIR / RUN_NAME
     config_dir.mkdir(exist_ok=True)
     module_config_path = config_dir / "module.config"
@@ -53,45 +54,69 @@ class UdsServerManager:
         self.thread = None
         self.servers = {}
         self.started = threading.Event()
+        self._stop_future = None
+        self._is_stopped = False
 
     def start(self):
+        if self._is_stopped:
+            return False  # Don't restart if explicitly stopped
+            
         def runner():
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
+
             async def start_all():
                 for name, path in self.socket_paths.items():
                     srv = UdsServer(str(path))
                     await srv.start()
                     self.servers[name] = srv
                 self.started.set()
+
             self.loop.run_until_complete(start_all())
             self.loop.run_forever()
 
         self.thread = threading.Thread(target=runner, daemon=True)
         self.thread.start()
+
         # Wait until servers started
-        self.started.wait(timeout=5)
+        self.started.wait(timeout=10)
         if not self.started.is_set():
             raise RuntimeError("Failed to start UDS servers")
+            
+        return True
 
     def stop(self):
-        if self.loop is None:
+        self._is_stopped = True
+        
+        if self.loop is None or not self.loop.is_running():
             return
+
+        # Schedule the stop coroutine in the event loop
         async def stop_all():
             for srv in self.servers.values():
                 await srv.stop()
-        fut = asyncio.run_coroutine_threadsafe(stop_all(), self.loop)
+
+        # Run the stop coroutine in the event loop
+        self._stop_future = asyncio.run_coroutine_threadsafe(stop_all(), self.loop)
+
+        # Wait for completion
         try:
-            fut.result(timeout=5)
+            self._stop_future.result(timeout=10)
         except Exception:
             pass
+
+        # Stop the event loop
         self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join(timeout=5)
+
+        # Wait for thread to finish
+        if self.thread:
+            self.thread.join(timeout=10)
 
 @pytest.fixture(scope="session")
 def daq_env():
     if not is_utility_available("hashpipe"):
         pytest.fail("hashpipe not found in PATH")
+
     if not is_utility_available("tcpreplay"):
         pytest.fail("tcpreplay not found in PATH")
 
@@ -107,7 +132,7 @@ def daq_env():
     tcpreplay_cmd = [
         "tcpreplay",
         "--mbps=5",
-        "--loop=0",
+        "--loop=0", 
         "--intf1=lo",
         PCAP_FILE,
     ]
@@ -121,8 +146,10 @@ def daq_env():
         "--max_file_size_mb", "5",
         "--bindhost", "lo",
     ]
+
     for mid in MODULE_IDS:
         start_daq.extend(["--module_id", str(mid)])
+
     hashpipe_launcher = subprocess.Popen(start_daq, cwd=BASE_DIR)
 
     # 3) Wait for hashpipe to be running
@@ -139,9 +166,10 @@ def daq_env():
     # 4) Optional: verify at least one server saw a connection within 10s
     start = time.time()
     while time.time() - start < 10:
-        # If any server’s connected event is set, we know hashpipe connected to at least one DP
+        # If any server's connected event is set, we know hashpipe connected to at least one DP
         # Skip strict requirement; filesystem checks will also verify pipeline
         break
+
     env = {
         "base_dir": BASE_DIR,
         "run_name": RUN_NAME,
@@ -154,8 +182,10 @@ def daq_env():
 
     try:
         yield env
+
     finally:
         print("\n-- Tearing down DAQ environment --")
+        
         # Stop tcpreplay first
         try:
             tcpreplay_proc.terminate()
@@ -171,6 +201,7 @@ def daq_env():
             sys.executable,
             "/app/tests/ci_tests/stop_daq.py",
         ]
+
         try:
             cp = subprocess.run(stop_daq, cwd=BASE_DIR, capture_output=True, text=True, timeout=15)
             print("stop_daq.py stdout:\n", cp.stdout)

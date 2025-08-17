@@ -95,6 +95,7 @@ RUN apt-get remove build-essential --autoremove -y
 ARG TEST_DIR="tests/ci_tests"
 COPY "${TEST_DIR}/PH_onsky_NGC7331_1pixTrig_Anytrig1.5pe__20250801_102213_965_filtered2.pcapng" /app/test_data.pcapng
 COPY ./tests/ /app/tests/
+COPY ./util/ /app/util/
 
 # Set a working directory for command execution
 WORKDIR /app
