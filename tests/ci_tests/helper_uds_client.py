@@ -2,14 +2,16 @@ import os
 import socket
 import stat
 import json
+import asyncio
+import time
 
 def read_one_frame_from_uds(socket_path, header_size_hint=None, timeout_s=5.0):
     """
     Reads exactly one frame from the snapshot.c client-facing UDS format:
-      [2-byte big-endian module_id]
-      [JSON header ending with b'\\n\\n']  (if header_size_hint is provided, readexactly that many)
-      ['*']
-      [binary image bytes], where size is inferred by the consumer.
+    [2-byte big-endian module_id]
+    [JSON header ending with b'\\n\\n'] (if header_size_hint is provided, readexactly that many)
+    ['*']
+    [binary image bytes], where size is inferred by the consumer.
     Returns (module_id, header_dict, raw_image_bytes)
     """
     # Sanity check
@@ -38,6 +40,7 @@ def read_one_frame_from_uds(socket_path, header_size_hint=None, timeout_s=5.0):
                 # fallback: find the terminator
                 extra = _recv_until(sock, b"\n\n")
                 header_bytes += extra
+
         header_json = header_bytes[:-2].decode("utf-8")
         header = json.loads(header_json)
 
@@ -47,13 +50,32 @@ def read_one_frame_from_uds(socket_path, header_size_hint=None, timeout_s=5.0):
         if star != b"*":
             raise RuntimeError(f"Expected '*' before image payload, got {star!r}")
 
-        # Without the dp’s exact bytes_per_image, we don’t know total bytes.
+        # Without the dp's exact bytes_per_image, we don't know total bytes.
         # For tests, read a safe upper bound then return what we got in one recv.
         # A robust client would know bytes_per_image. For CI, read a max buffer.
         img = _recv_at_most(sock, 4096)  # enough for ph256/img16 frame sizes in CI
+
         return module_id, header, img
+
     finally:
         sock.close()
+
+def read_one_frame_with_retry(socket_path, retries=5, base_timeout=8.0):
+    """
+    Read one frame with retries and exponential backoff for robust testing.
+    """
+    for attempt in range(retries):
+        timeout = base_timeout * (1.5 ** attempt)  # Exponential backoff
+        try:
+            result = read_one_frame_from_uds(socket_path, timeout_s=timeout)
+            print(f"Successfully read frame on attempt {attempt + 1}")
+            return result
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {e}")
+            if attempt < retries - 1:
+                time.sleep(0.5 * (attempt + 1))  # Progressive delay
+    
+    raise RuntimeError(f"Failed to read frame after {retries} attempts")
 
 def _recv_exact(sock, n):
     buf = bytearray()
