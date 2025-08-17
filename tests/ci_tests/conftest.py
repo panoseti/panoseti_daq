@@ -9,7 +9,6 @@ import asyncio
 from pathlib import Path
 import stat
 import pytest
-
 from control_util import is_hashpipe_running
 from uds_server import UdsServer
 
@@ -59,64 +58,89 @@ class UdsServerManager:
 
     def start(self):
         if self._is_stopped:
-            return False  # Don't restart if explicitly stopped
-            
+            # Reset state for restart
+            self._is_stopped = False
+            self.started.clear()
+            self.servers.clear()
+
         def runner():
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
-
+            
             async def start_all():
-                for name, path in self.socket_paths.items():
-                    srv = UdsServer(str(path))
-                    await srv.start()
-                    self.servers[name] = srv
-                self.started.set()
-
-            self.loop.run_until_complete(start_all())
-            self.loop.run_forever()
+                try:
+                    for name, path in self.socket_paths.items():
+                        srv = UdsServer(str(path))
+                        await srv.start()
+                        self.servers[name] = srv
+                        print(f"Started UDS server for {name} at {path}")
+                    self.started.set()
+                except Exception as e:
+                    print(f"Failed to start UDS servers: {e}")
+                    raise
+            
+            try:
+                self.loop.run_until_complete(start_all())
+                self.loop.run_forever()
+            except Exception as e:
+                print(f"UDS server loop failed: {e}")
 
         self.thread = threading.Thread(target=runner, daemon=True)
         self.thread.start()
 
-        # Wait until servers started
-        self.started.wait(timeout=10)
-        if not self.started.is_set():
-            raise RuntimeError("Failed to start UDS servers")
-            
+        # Wait for startup with extended timeout
+        if not self.started.wait(timeout=15):
+            raise RuntimeError("Failed to start UDS servers within timeout")
+        
+        # Give hashpipe time to detect and connect to new sockets
+        time.sleep(2)
         return True
 
     def stop(self):
         self._is_stopped = True
-        
         if self.loop is None or not self.loop.is_running():
             return
 
-        # Schedule the stop coroutine in the event loop
         async def stop_all():
+            tasks = []
             for srv in self.servers.values():
-                await srv.stop()
+                tasks.append(srv.stop())
+            
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Run the stop coroutine in the event loop
+        # Schedule the stop coroutine
         self._stop_future = asyncio.run_coroutine_threadsafe(stop_all(), self.loop)
 
-        # Wait for completion
+        # Wait for completion with extended timeout
         try:
-            self._stop_future.result(timeout=10)
-        except Exception:
-            pass
+            self._stop_future.result(timeout=20)
+        except Exception as e:
+            print(f"Error during UDS server shutdown: {e}")
 
         # Stop the event loop
         self.loop.call_soon_threadsafe(self.loop.stop)
 
         # Wait for thread to finish
-        if self.thread:
-            self.thread.join(timeout=10)
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=20)
+            
+        # Ensure all socket files are cleaned up
+        for path in self.socket_paths.values():
+            try:
+                if os.path.exists(str(path)):
+                    os.unlink(str(path))
+            except Exception:
+                pass
+            
+        # Clear state
+        self.servers.clear()
+        self.started.clear()
 
 @pytest.fixture(scope="session")
 def daq_env():
     if not is_utility_available("hashpipe"):
         pytest.fail("hashpipe not found in PATH")
-
     if not is_utility_available("tcpreplay"):
         pytest.fail("tcpreplay not found in PATH")
 
@@ -132,13 +156,13 @@ def daq_env():
     tcpreplay_cmd = [
         "tcpreplay",
         "--mbps=5",
-        "--loop=0", 
+        "--loop=0",
         "--intf1=lo",
         PCAP_FILE,
     ]
     tcpreplay_proc = subprocess.Popen(tcpreplay_cmd)
 
-    # 2) Start hashpipe via start_daq.py (ensure your start_daq.py uses psutil-based PID find)
+    # 2) Start hashpipe via start_daq.py
     start_daq = [
         sys.executable,
         "/app/tests/ci_tests/start_daq.py",
@@ -146,7 +170,6 @@ def daq_env():
         "--max_file_size_mb", "5",
         "--bindhost", "lo",
     ]
-
     for mid in MODULE_IDS:
         start_daq.extend(["--module_id", str(mid)])
 
@@ -163,13 +186,6 @@ def daq_env():
             print("No PID file was created by start_daq.py")
         raise
 
-    # 4) Optional: verify at least one server saw a connection within 10s
-    start = time.time()
-    while time.time() - start < 10:
-        # If any server's connected event is set, we know hashpipe connected to at least one DP
-        # Skip strict requirement; filesystem checks will also verify pipeline
-        break
-
     env = {
         "base_dir": BASE_DIR,
         "run_name": RUN_NAME,
@@ -182,7 +198,6 @@ def daq_env():
 
     try:
         yield env
-
     finally:
         print("\n-- Tearing down DAQ environment --")
         
@@ -201,7 +216,6 @@ def daq_env():
             sys.executable,
             "/app/tests/ci_tests/stop_daq.py",
         ]
-
         try:
             cp = subprocess.run(stop_daq, cwd=BASE_DIR, capture_output=True, text=True, timeout=15)
             print("stop_daq.py stdout:\n", cp.stdout)

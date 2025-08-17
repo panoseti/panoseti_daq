@@ -10,6 +10,7 @@ jobs:
   compile-test:
     name: Test compilation and individual test files
     runs-on: ubuntu-latest
+    timeout-minutes: 25  # Overall job timeout
 
     steps:
     - name: Checkout repository
@@ -29,23 +30,30 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    # Individual test file runs for better granularity
-    - name: Run test_can_hashpipe_init.py
+    # Quick functionality tests
+    - name: Run basic functionality tests
+      timeout-minutes: 5
       run: |
         docker run --rm --shm-size=2g panoseti-daq:latest \
           python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_can_hashpipe_init.py
 
-    - name: Run test_pff_header_consistency.py
+    # Framework resilience tests
+    - name: Run UDS resilience tests  
+      timeout-minutes: 5
       run: |
         docker run --rm --shm-size=2g panoseti-daq:latest \
-          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_pff_header_consistency.py
+          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_uds_resilience.py
 
-    - name: Run test_uds_data_path.py
+    # Data integrity tests
+    - name: Run UDS data path tests
+      timeout-minutes: 5
       run: |
         docker run --rm --shm-size=2g panoseti-daq:latest \
           python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_uds_data_path.py
 
-    - name: Run test_uds_resilience.py
+    # Filesystem-dependent tests (need more time in containers)
+    - name: Run PFF header consistency tests
+      timeout-minutes: 5
       run: |
         docker run --rm --shm-size=2g panoseti-daq:latest \
-          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_uds_resilience.py
+          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_pff_header_consistency.py
