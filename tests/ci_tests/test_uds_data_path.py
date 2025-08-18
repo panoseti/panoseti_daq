@@ -14,7 +14,7 @@ import pytest
 
 from control_util import is_hashpipe_running
 from uds_server import UdsServer
-from helper_uds_client import read_one_frame_from_uds
+from helper_uds_client import read_one_frame_from_uds, UdsFrameReader
 
 # Focus on ph256 since that's what we have test data for
 UDS_TEMPLATE = "/tmp/hashpipe_grpc.dp_{dp}.sock"
@@ -70,26 +70,6 @@ class TestUdsDataPath:
     These tests verify that various data corruption, connection issues,
     and protocol violations don't crash Hashpipe.
     """
-
-    def test_data_integrity_ph256(self, daq_env):
-        """
-        Test that ph256 UDS data path maintains data integrity and doesn't crash
-        when receiving real ph256 frames.
-        """
-        assert _ensure_uds_available(daq_env), "Could not establish UDS connection"
-        
-        uds_mgr = daq_env["uds_manager"]
-        srv = uds_mgr.servers["ph256"]
-
-        # Wait for multiple frames to verify sustained data flow
-        start = time.time()
-        while time.time() - start < 15:
-            if srv.frames_received >= 10:
-                break
-            time.sleep(0.5)
-
-        assert srv.frames_received >= 10, f"Expected >=10 frames, got {srv.frames_received}"
-        assert is_hashpipe_running(), "Hashpipe should remain running during data flow"
 
     def test_rapid_connect_disconnect_ph256(self, daq_env):
         """
@@ -324,6 +304,24 @@ class TestUdsDataPath:
 
         mgr.stop()
 
+    def test_data_integrity_ph256(self, daq_env):
+        """
+        Test that ph256 UDS data path maintains data integrity.
+        """
+        assert _ensure_uds_available(daq_env), "Could not establish UDS connection"
+        uds_mgr = daq_env["uds_manager"]
+        srv = uds_mgr.servers["ph256"]
+
+        # Wait for multiple frames to verify sustained data flow
+        start = time.time()
+        while time.time() - start < 15:
+            if srv.frames_received >= 10:
+                break
+            time.sleep(0.5)
+        
+        assert srv.frames_received >= 10, f"Expected >=10 frames, got {srv.frames_received}"
+        assert is_hashpipe_running(), "Hashpipe should remain running during data flow"
+
     def test_concurrent_multiple_clients_ph256(self, daq_env):
         """
         Test behavior when multiple clients try to connect to the same UDS socket.
@@ -362,10 +360,9 @@ class TestUdsDataPath:
 
     def test_data_validation_ph256(self, daq_env):
         """
-        Test that we can actually read and validate ph256 frame data.
+        Test that we can validate the content of received ph256 frames.
         """
         assert _ensure_uds_available(daq_env), "Could not establish UDS connection"
-        
         uds_mgr = daq_env["uds_manager"]
         srv = uds_mgr.servers["ph256"]
 
@@ -375,31 +372,26 @@ class TestUdsDataPath:
             if srv.connected.is_set() and srv.frames_received >= 5:
                 break
             time.sleep(0.5)
-
+        
         assert srv.connected.is_set(), "Should have ph256 connection"
         assert srv.frames_received >= 5, "Should have received frames"
 
-        # Try to read a frame using the helper client
-        ph_path = uds_path("ph256")
-        try:
-            # Read one frame
-            module_id, header, image_data = read_one_frame_from_uds(ph_path, timeout_s=5.0)
+        # Use stored frames from the server for validation
+        stored_frames = srv.recent_frames
+        assert len(stored_frames) > 0, "UDS server should have stored some frames"
 
-            # Validate frame structure
-            assert isinstance(module_id, int), "Module ID should be integer"
-            assert module_id in [1, 254], f"Module ID {module_id} should be in test module set"
-            assert isinstance(header, dict), "Header should be dict"
-            assert 'quabo_num' in header, "Header should contain quabo_num"
-            assert 'pkt_num' in header, "Header should contain pkt_num"
-            assert 'pkt_tai' in header, "Header should contain pkt_tai"
-            assert 'pkt_nsec' in header, "Header should contain pkt_nsec"
-            assert isinstance(image_data, bytes), "Image data should be bytes"
-            assert len(image_data) > 0, "Image data should not be empty"
+        # Validate the structure of the first stored frame
+        frame_data = stored_frames[0]
+        module_id = frame_data['module_id']
+        header = frame_data['header']
+        image_data = frame_data['image_data']
 
-        except Exception as e:
-            # If we can't read, it might be due to timing, but Hashpipe should still be running
-            print(f"Frame read failed (may be expected): {e}")
-
+        assert isinstance(module_id, int), "Module ID should be an integer"
+        assert module_id in daq_env["module_ids"], f"Module ID {module_id} not in test set"
+        assert isinstance(header, dict), "Header should be a dict"
+        assert 'quabo_num' in header, "Header should contain 'quabo_num'"
+        assert 'pkt_num' in header, "Header should contain 'pkt_num'"
+        assert isinstance(image_data, bytes) and len(image_data) > 0, "Image data should be non-empty bytes"
         assert is_hashpipe_running(), "Hashpipe should remain running during data validation"
 
     def test_sustained_high_rate_ph256(self, daq_env):
@@ -413,8 +405,8 @@ class TestUdsDataPath:
 
         initial_frames = srv.frames_received
 
-        # Let it run for sustained period (reduced to 20 seconds for faster tests)
-        test_duration = 20
+        # Let it run for sustained period 
+        test_duration = 60
         start = time.time()
         last_check = start
         last_frames = initial_frames
@@ -452,78 +444,47 @@ class TestUdsDataPath:
 
     def test_uds_header_consistency_ph256(self, daq_env):
         """
-        Test that UDS-delivered ph256 frames have consistent JSON header formatting.
-        This ensures UDS path maintains PFF format requirements.
+        Test that UDS-delivered ph256 frames have consistent JSON headers
+        by checking the raw byte representations captured by the server.
         """
         assert _ensure_uds_available(daq_env), "Could not establish UDS connection"
-        
         uds_mgr = daq_env["uds_manager"]
         srv = uds_mgr.servers["ph256"]
+        nframes = 100
 
-        # Wait for connection and multiple frames
+        # Wait for the server to receive a good number of frames
         start = time.time()
-        while time.time() - start < 15:
-            if srv.connected.is_set() and srv.frames_received >= 10:
+        while time.time() - start < 20:
+            if srv.frames_received >= nframes:
                 break
             time.sleep(0.5)
 
-        assert srv.connected.is_set(), "ph256 UDS connection required"
-        assert srv.frames_received >= 10, f"Need >=10 frames for consistency test, got {srv.frames_received}"
+        assert srv.frames_received >= nframes, f"Need >= {nframes} frames for consistency test, got {srv.frames_received}"
 
-        # Collect multiple frames via UDS client
-        ph_path = uds_path("ph256")
-        header_sizes = []
-        json_structures = []
+        # Retrieve the raw JSON byte strings from the server's stored frames
+        stored_frames = srv.recent_frames[-nframes:] # Analyze the last nframes frames
+        json_headers = [frame['json_bytes'] for frame in stored_frames]
 
-        for frame_num in range(5):  # Test 5 frames
-            try:
-                # Verify socket exists before attempting read
-                if not _uds_exists(ph_path):
-                    print(f"Frame {frame_num}: UDS socket does not exist, skipping")
-                    continue
-                    
-                module_id, header, image_data = read_one_frame_from_uds(ph_path, timeout_s=3.0)
+        # 1. Primary Test: All JSON headers must have the exact same byte length.
+        # This is the most critical requirement for predictable frame seeking.
+        header_lengths = {len(h) for h in json_headers}
+        assert len(header_lengths) == 1, \
+            f"UDS headers have inconsistent byte lengths: {header_lengths}. " \
+            "All headers from hashpipe must be identical in size."
 
-                # Convert header back to JSON string to measure size
-                import json
-                header_json = json.dumps(header, separators=(',', ':'))
-                header_sizes.append(len(header_json))
+        print(f"✓ All UDS headers have a consistent length: {header_lengths.pop()} bytes")
 
-                # Track JSON structure (field names and types)
-                structure = {k: type(v).__name__ for k, v in header.items()}
-                json_structures.append(structure)
+        # 2. Sanity Check: Ensure the header is valid JSON and contains required fields.
+        first_header_bytes = json_headers[0]
+        try:
+            header_content = json.loads(first_header_bytes)
+            required_fields = {'quabo_num', 'pkt_num', 'pkt_tai', 'pkt_nsec', 'tv_sec', 'tv_usec'}
+            actual_fields = set(header_content.keys())
+            assert required_fields.issubset(actual_fields), \
+                f"Missing required fields. Expected: {required_fields}, Got: {actual_fields}"
+        except json.JSONDecodeError:
+            pytest.fail("The received JSON header is not valid JSON.")
+        
+        print(f"UDS header consistency test passed for {len(json_headers)} frames.")
 
-            except Exception as e:
-                print(f"Frame {frame_num} read failed: {e}")
-                # Continue trying other frames
 
-        if len(header_sizes) < 3:
-            pytest.skip(f"Could only read {len(header_sizes)} frames from UDS, need at least 3")
-
-        # All headers should be similar size (within small variance for number formatting)
-        min_size = min(header_sizes)
-        max_size = max(header_sizes)
-        size_variance = max_size - min_size
-
-        print(f"UDS header sizes: {header_sizes}, variance: {size_variance}")
-
-        # Allow small variance for different number lengths, but ensure consistency
-        assert size_variance <= 20, f"UDS header size variance too large: {size_variance} bytes"
-
-        # All JSON structures should be identical
-        first_structure = json_structures[0]
-        for i, structure in enumerate(json_structures[1:], 1):
-            assert structure == first_structure, (
-                f"Frame {i} has different JSON structure: {structure} vs {first_structure}"
-            )
-
-        # Verify required fields are present
-        required_fields = {'quabo_num', 'pkt_num', 'pkt_tai', 'pkt_nsec', 'tv_sec', 'tv_usec'}
-        actual_fields = set(first_structure.keys())
-
-        assert required_fields.issubset(actual_fields), (
-            f"Missing required fields. Expected: {required_fields}, Got: {actual_fields}"
-        )
-
-        print(f"UDS header consistency test passed: {len(header_sizes)} frames, "
-              f"size range: {min_size}-{max_size} bytes")

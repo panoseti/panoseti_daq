@@ -5,6 +5,58 @@ import json
 import asyncio
 import time
 
+class UdsFrameReader:
+    def __init__(self, socket_path, timeout_s=5.0):
+        self.socket_path = socket_path
+        self.timeout_s = timeout_s
+        self.sock = None
+    
+    def connect(self):
+        if self.sock:
+            return
+        
+        # Sanity checks
+        if not os.path.exists(self.socket_path):
+            raise FileNotFoundError(f"{self.socket_path} does not exist")
+        st = os.stat(self.socket_path)
+        if not stat.S_ISSOCK(st.st_mode):
+            raise RuntimeError(f"{self.socket_path} exists but is not a socket")
+        
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout_s)
+        self.sock.connect(self.socket_path)
+    
+    def read_frame(self):
+        self.connect()
+        
+        # Read one frame using existing socket
+        mbytes = _recv_exact(self.sock, 2)
+        module_id = int.from_bytes(mbytes, "big")
+        
+        header_bytes = _recv_until(self.sock, b"\n\n")
+        header_json = header_bytes[:-2].decode("utf-8")
+        header = json.loads(header_json)
+        
+        star = _recv_exact(self.sock, 1)
+        if star != b"*":
+            raise RuntimeError(f"Expected '*' before image payload, got {star!r}")
+        
+        img = _recv_at_most(self.sock, 4096)
+        return module_id, header, img
+    
+    def close(self):
+        if self.sock:
+            self.sock.close()
+            self.sock = None
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
+
 def read_one_frame_from_uds(socket_path, header_size_hint=None, timeout_s=5.0):
     """
     Reads exactly one frame from the snapshot.c client-facing UDS format:

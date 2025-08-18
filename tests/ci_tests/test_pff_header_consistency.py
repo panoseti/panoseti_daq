@@ -11,7 +11,7 @@ from control_util import is_hashpipe_running
 import sys
 sys.path.append('/app/tests/')
 sys.path.append('/app/util/')
-import pff
+import pff # type: ignore
 
 @pytest.mark.usefixtures("daq_env")
 class TestPffHeaderConsistency:
