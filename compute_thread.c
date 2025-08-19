@@ -533,12 +533,18 @@ static int init(hashpipe_thread_args_t *args)
     // Initializing the module data with the config file
     char config_location[STR_BUFFER_SIZE];
     sprintf(config_location, CONFIGFILE_DEFAULT);
+    group_ph_frames = 0; // Default to not grouping frame
+
+    // Lock shared buffer to properly get and set values.
+    hashpipe_status_lock_safe(&st);
     hgets(st.buf, "CONFIG", STR_BUFFER_SIZE, config_location);
+    hgeti4(st.buf, "GROUPPHFRAMES", &group_ph_frames);
+    hashpipe_status_unlock_safe(&st);
+
     printf("Config Location: %s\n", config_location);
     FILE *modConfig_file = fopen(config_location, "r");
 
     // Fetch user input for whether to PH frames are to be grouped.
-    hgeti4(st.buf, "GROUPPHFRAMES", &group_ph_frames);
     if (group_ph_frames)
     {
         printf("Group frames is %i (True). Hashpipe will group incoming PH frames.\n", group_ph_frames);
