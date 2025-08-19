@@ -25,21 +25,8 @@
 #include "net_thread.h"
 
 
-// get the time difference
-static uint64_t timeval_diff(struct timeval *start, struct timeval *end)
-{
-    struct timeval diff;
-    diff.tv_sec = end->tv_sec - start->tv_sec;
-    diff.tv_usec = end->tv_usec - start->tv_usec;
-
-    if (diff.tv_usec < 0)
-    {
-        diff.tv_sec -= 1;
-        diff.tv_usec += 1000000;
-    }
-    return diff.tv_sec * 1000000 + diff.tv_usec;
-}
-
+static int group_ph_frames;
+static module_snapshot_buffer_t *snapshot_buffers;
 
 // Initialization function for Hashpipe.
 // This function is called once when the thread is created
@@ -55,6 +42,11 @@ static int init(hashpipe_thread_args_t *args)
     char ssdir[64];
     // snapshot interval time (ms), defaut is 100ms.
     int ssint = 100;
+
+    char module_config[STR_BUFFER_SIZE];
+    sprintf(module_config, CONFIGFILE_DEFAULT);
+    group_ph_frames = 0; // Default to not grouping frame
+
     hashpipe_status_t st = args->st;
     // set default values.
     strcpy(bindhost, "0.0.0.0");
@@ -68,6 +60,8 @@ static int init(hashpipe_thread_args_t *args)
     // - we will use the default info set above.
     hgets(st.buf, "BINDHOST", 80, bindhost);
     hgeti4(st.buf, "BINDPORT", &bindport);
+    // Get ph frame grouping info
+    hgeti4(st.buf, "GROUPPHFRAMES", &group_ph_frames);
     // Get snapshot info
     hgets(st.buf, "SSDIR", 64, ssdir);
     hgeti4(st.buf, "SSINT", &ssint);
@@ -77,7 +71,8 @@ static int init(hashpipe_thread_args_t *args)
     hputs(st.buf, "SSDIR", ssdir);
     hputi4(st.buf, "SSINT", ssint);
     hputi8(st.buf, "NPACKETS", 0);
-
+    // Get module config path
+    hgets(st.buf, "CONFIG", STR_BUFFER_SIZE, module_config);
     // Unlock shared buffer once complete.
     hashpipe_status_unlock_safe(&st);
 
@@ -121,6 +116,15 @@ static int init(hashpipe_thread_args_t *args)
     {
         db->block[i].header.INTSIG = 0;
     }
+
+    // Initialize snapshot buffers
+    snapshot_buffers = NULL;
+    init_module_snapshot_buffers(module_config, snapshot_buffers);
+    if (snapshot_buffers == NULL) {
+        hashpipe_error("net_thread", "Failed to initialize snapshot buffers\n");
+        pthread_exit(NULL);
+    }
+
     printf("-----------Finished Setup of Input Thread------------\n\n");
     // Success!
     return 0;
@@ -356,67 +360,71 @@ static void *run(hashpipe_thread_args_t *args)
 
             blockHeader->n_pkts_in_block++;
 
+            // ===========
+            // Snapshot code
+            // ===========
+
             // check idle sockets to detect grpc re-init
-            struct timeval now;
-            gettimeofday(&now, NULL);
-            // Check every second to avoid excessive syscalls
-            if (timeval_diff(&last_idle_check_time, &now) > UDS_IDLE_CHECK_PERIOD_US) {
-                uds_connection_t* conn_iter = get_uds_connections_list_head();
-                for (; conn_iter != NULL; conn_iter = conn_iter->next) {
-                    if (conn_iter->fd >= 0) { // Only check active connections
-                        // If no successful write in the last 3 seconds, close the socket
-                        if (timeval_diff(&conn_iter->last_successful_write_time, &now) > UDS_CONNECTION_TIMEOUT_US) {
-                            hashpipe_warn("net_thread",
-                                "UDS connection for %s has been idle for >3s. Forcing reconnect.",
-                                conn_iter->dp_name);
-                            close(conn_iter->fd);
-                            conn_iter->fd = -1; // Mark as disconnected
-                        }
-                    }
-                }
-                last_idle_check_time = now; // Update the check time
+            if (timeval_diff(&last_idle_check_time, &nowTime) > UDS_IDLE_CHECK_PERIOD_US) {
+                check_uds_connections(&nowTime);
+                last_idle_check_time = nowTime; // Update the check time
             }
 
-            // check the timestamp here;
-            // then decide is we need to write the data into snapshot files.
-            if (blockHeader->pkt_head[i].acq_mode == 0x01)
-            {
-                // for PH snapshots
-                tdiff = timeval_diff(&lastPHTime, &nowTime);
-                if (tdiff > ssint * 1000)
-                {
-                    // WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
-                    WritePHSnapshotsToUds(DP_PH_256_IMG, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
-                    lastPHTime.tv_sec = nowTime.tv_sec;
-                    lastPHTime.tv_usec = nowTime.tv_usec;
-                }
+            // Fetch the snapshot buffer for the current module
+            module_snapshot_buffer_t *snapshot_buffer = get_snapshot_buffer(blockHeader->pkt_head[i].mod_num, snapshot_buffers);
+            if (snapshot_buffer) {
+                snapshot_buffer->update_snapshot(
+                    &blockHeader->pkt_head[i],
+                    pkt_data + BYTE_PKT_HEADER,
+                    &nowTime,
+                    ssint
+                );
+                // PACKET_HEADER pkt_head = blockHeader->pkt_head[i];
+
+                // // char acq_mode = pkt_head.acq_mode; 
+                // // DATA_PRODUCT dp = acq_mode_to_dp(acq_mode, group_ph_frames);
+                // if (dp == DP_PH_256_IMG || dp == DP_PH_1024_IMG)
+                // {
+                //     snapshot_buffer->update_snapshot(&blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
+                //     // for PH snapshots
+                //     tdiff = timeval_diff(&lastPHTime, &nowTime);
+                //     if (tdiff > ssint * 1000)
+                //     {
+                //         // WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
+                //         WritePHSnapshotsToUds(DP_PH_256_IMG, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
+                //         lastPHTime.tv_sec = nowTime.tv_sec;
+                //         lastPHTime.tv_usec = nowTime.tv_usec;
+                //     }
+                // }
+                // else if (dp == DP_BIT16_IMG)
+                // {
+                //     // if we get four packets from four different quabos,
+                //     // imgfull will be 0xf.
+                //     // then we will write the data into the snapshot file.
+                //     quabo_num = blockHeader->pkt_head[i].quabo_num;
+                //     imgfull |= 1 << quabo_num;
+                //     // TODO: group the mov images?
+                //     quabo16_to_module16_copy(pkt_data + BYTE_PKT_HEADER, quabo_num, oimgbuf);
+                //     memcpy(imgbuf + quabo_num * 512, oimgbuf, 512);
+                //     memcpy(&imgheader[quabo_num], &blockHeader->pkt_head[i], sizeof(PACKET_HEADER));
+                //     if (imgfull == 0xf)
+                //     {
+                //         imgfull = 0;
+                //         // for Img16 snapshots
+                //         tdiff = timeval_diff(&lastImg16Time, &nowTime);
+                //         if (tdiff > ssint * 1000)
+                //         {
+                //             // DATA_PRODUCT img_dp = (imgheader[0].acq_mode == 0x03) ? DP_BIT8_IMG : DP_BIT16_IMG;
+                //             // WriteImgSnapshots(mov16_fp, imgheader, imgbuf);
+                //             WriteImgSnapshotsToUds(dp, imgheader, imgbuf);
+                //             lastImg16Time.tv_sec = nowTime.tv_sec;
+                //             lastImg16Time.tv_usec = nowTime.tv_usec;
+                //         }
+                //     }
+                // }
             }
-            else if (blockHeader->pkt_head[i].acq_mode == 0x02 || blockHeader->pkt_head[i].acq_mode == 0x03)
-            {
-                // if we get four packets from four different quabos,
-                // imgfull will be 0xf.
-                // then we will write the data into the snapshot file.
-                quabo_num = blockHeader->pkt_head[i].quabo_num;
-                imgfull |= 1 << quabo_num;
-                // TODO: group the mov images?
-                quabo16_to_module16_copy(pkt_data + BYTE_PKT_HEADER, quabo_num, oimgbuf);
-                memcpy(imgbuf + quabo_num * 512, oimgbuf, 512);
-                memcpy(&imgheader[quabo_num], &blockHeader->pkt_head[i], sizeof(PACKET_HEADER));
-                if (imgfull == 0xf)
-                {
-                    imgfull = 0;
-                    // for Img16 snapshots
-                    tdiff = timeval_diff(&lastImg16Time, &nowTime);
-                    if (tdiff > ssint * 1000)
-                    {
-                        DATA_PRODUCT img_dp = (imgheader[0].acq_mode == 0x03) ? DP_BIT8_IMG : DP_BIT16_IMG;
-                        // WriteImgSnapshots(mov16_fp, imgheader, imgbuf);
-                        WriteImgSnapshotsToUds(img_dp, imgheader, imgbuf);
-                        lastImg16Time.tv_sec = nowTime.tv_sec;
-                        lastImg16Time.tv_usec = nowTime.tv_usec;
-                    }
-                }
-            }
+
+            // ==== End snapshot code ====
 
             // Release the hashpipe frame back to the kernel to gather data
             hashpipe_pktsock_release_frame(p_frame);

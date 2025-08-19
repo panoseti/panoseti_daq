@@ -17,6 +17,9 @@ extern "C" {
 
 #define UDS_PATH_TEMPLATE "/tmp/hashpipe_grpc.dp_%s.sock"
 
+// get the time difference
+static uint64_t timeval_diff(struct timeval *start, struct timeval *end);
+
 // Structure representing a Unix Domain Socket connection.
 typedef struct uds_connection {
     char dp_name[16];
@@ -25,6 +28,10 @@ typedef struct uds_connection {
     struct timeval last_successful_write_time;
     struct uds_connection *next;
 } uds_connection_t;
+
+
+// Check and close idle UDS connections
+void check_uds_connections(struct timeval *now);
 
 /**
  * @brief Gets the head of the list of Unix Domain Socket connections.
@@ -58,7 +65,7 @@ void WritePHSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data);
 * @param header Pointer to an array of 4 PACKET_HEADER structs.
 * @param data Pointer to the assembled image data.
 */
-void WriteImgSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data);
+void write_32x32_to_uds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data);
 
 /**
 * @brief Sends a single-packet pulse-height snapshot over a Unix Domain Socket.
@@ -67,7 +74,124 @@ void WriteImgSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *dat
 * @param header Pointer to the packet's header.
 * @param data Pointer to the pulse-height image data (512 bytes).
 */
-void WritePHSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data);
+void write_16x16_to_uds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data);
+
+// Structure representing one snapshot
+typedef struct snapshot {
+    DATA_PRODUCT dp;
+    PACKET_HEADER headers[4];
+    uint8_t data[BYTES_PER_PKT_IMAGE * 4]; // 2048 bytes for a 32x32 16-bit per pixel image
+    uint8_t quabo_bitmap; // Bitmap to track which quabos are present in the snapshot
+    struct timeval last_update_time; // Last time this snapshot was updated
+    struct snapshot *next;
+} snapshot_t;
+
+struct module_snapshot_buffer {
+    uint16_t module_id;
+    snapshot_t *snapshot_head;
+    snapshot_t *snapshot_tail;
+    module_snapshot_buffer_t *next;
+
+    module_snapshot_buffer(uint16_t module_id) {
+        this->module_id = module_id;
+        this->snapshot_head = NULL;
+        this->snapshot_tail = NULL;
+        this->next = NULL;
+
+        // Initialize linked list of snapshots for each data product
+        for (DATA_PRODUCT dp = DP_BIT16_IMG; dp < DP_NONE; dp = (DATA_PRODUCT)(dp + 1)) {
+            snapshot_t *s = (snapshot_t *)malloc(sizeof(snapshot_t));
+            if (!s) {
+                fprintf(stderr, "Failed to allocate memory for snapshot\n");
+                exit(EXIT_FAILURE);
+            }
+            memset(s, 0, sizeof(snapshot_t));
+            s->dp = dp;
+            s->next = NULL;
+            if (this->snapshot_head == NULL) {
+                this->snapshot_head = s;
+                this->snapshot_tail = s;
+            } else {
+                this->snapshot_tail->next = s;
+                this->snapshot_tail = s;
+            }
+        }
+    }
+
+    snapshot_t* get_snapshot(DATA_PRODUCT dp) {
+        for (snapshot_t *current = snapshot_head; current != NULL; current = current->next) {
+            if (current->dp == dp) {
+                return current;
+            }
+        }
+        return NULL; // Not found
+    }
+
+    void update_snapshot(PACKET_HEADER *header, uint8_t *data, struct timeval *nowTime, int snapshot_interval_ms) {
+        char acq_mode = header->acq_mode;
+        int quabo_num = header.quabo_num;
+        DATA_PRODUCT dp = acq_mode_to_dp(acq_mode, group_ph_frames);
+        snapshot_t *s = this->get_snapshot(dp);
+
+        // If timestamp difference exceeds snapshot interval, write snapshot to the unix-domain socket for this data product
+        bool write_snapshot = false;
+        tdiff = timeval_diff(&s->last_update_time, &nowTime);
+        if ((tdiff > snapshot_interval_ms * 1000))
+        {
+            s->last_update_time.tv_sec = nowTime.tv_sec;
+            s->last_update_time.tv_usec = nowTime.tv_usec;
+            write_snapshot = true;
+        }
+
+        if (dp == DP_PH_256_IMG) {
+            // For PH 256 images, use only the 0th index of the header and data buffers.
+            s->quabo_bitmap = 0x01; // Only one quabo for PH 256
+            // memcpy(&s->headers[0], header, sizeof(PACKET_HEADER));
+            quabo16_to_quabo16_copy(data, quabo_num, s->data);
+
+            if (write_snapshot) {
+                write_16x16_to_uds(dp, header, s->data);
+                // memset(s->headers, 0, sizeof(s->headers));
+                memset(s->data, 0, sizeof(s->data));
+            }
+        } else {
+            // Require 4 quabo images 
+            s->quabo_bitmap |= 1 << quabo_num;
+            memcpy(&s->headers[quabo_num], header, sizeof(PACKET_HEADER));
+
+            if (bytes_per_pixel(dp) == 1) {
+                quabo8_to_module8_copy(data, quabo_num, s->data);
+            } else if (bytes_per_pixel(dp) == 2) {
+                quabo16_to_module16_copy(data, quabo_num, s->data);
+            } else {
+                fprintf(stderr, "Unsupported data product for snapshot: %d\n", dp);
+                return; // Unsupported data product
+            }
+            if (s->quabo_bitmap == 0xf) {
+                if (write_snapshot) {
+                    write_16x16_to_uds(dp, s->headers, s->data);
+                }
+                memset(s->headers, 0, sizeof(s->headers));
+                memset(s->data, 0, sizeof(s->data));
+                s->quabo_bitmap = 0;
+            }
+        }
+    }
+
+
+    ~module_snapshot_buffer() {
+        for (snapshot_t *current = snapshot_head; current;) {
+            snapshot_t *next = current->next;
+            free(current);
+            current = next;
+        }
+    }
+ } module_snapshot_buffer_t;
+
+
+void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer_t *snapshot_buffers);
+
+
 
 #ifdef __cplusplus
 }

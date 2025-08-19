@@ -19,6 +19,82 @@
 #include "pff.h"
 #include "databuf.h" 
 
+// get the time difference
+static uint64_t timeval_diff(struct timeval *start, struct timeval *end)
+{
+    struct timeval diff;
+    diff.tv_sec = end->tv_sec - start->tv_sec;
+    diff.tv_usec = end->tv_usec - start->tv_usec;
+
+    if (diff.tv_usec < 0)
+    {
+        diff.tv_sec -= 1;
+        diff.tv_usec += 1000000;
+    }
+    return diff.tv_sec * 1000000 + diff.tv_usec;
+}
+
+module_snapshot_buffer_t* get_snapshot_buffer(uint16_t module_id, module_snapshot_buffer_t *snapshot_buffers) {
+    module_snapshot_buffer_t *iter = snapshot_buffers;
+    while (iter != NULL) {
+        if (iter->module_id == module_id) {
+            return iter;
+        }
+        iter = iter->next;
+    }
+    return NULL;
+}
+
+/* Initialize snapshot buffers for each declared module id */
+void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer_t *snapshot_buffers) {
+    snapshot_buffers = NULL;
+
+    char fbuf[100];
+    signed char cbuf;
+    uint16_t module_id;
+    FILE *module_config_fp = fopen(module_config, "r");
+
+    if (module_config_fp == NULL)
+    {
+        perror("Error Opening Config File");
+        exit(1);
+    }
+    cbuf = getc(module_config_fp);
+
+    // Parse the Module Config file for the modules to expect data from
+    while (cbuf != EOF)
+    {
+        ungetc(cbuf, module_config_fp);
+        if (cbuf != '#')
+        {
+            if (fscanf(module_config_fp, "%u\n", &module_id) == 1)
+            {
+                if (snapshot_buffers == NULL) {
+                    snapshot_buffers = new module_snapshot_buffer_t(module_id);
+                } else {
+                    module_snapshot_buffer_t *new_buffer = new module_snapshot_buffer_t(module_id);
+                    new_buffer->next = snapshot_buffers;
+                    snapshot_buffers = new_buffer;
+                }
+            }
+        }
+        else
+        {
+            if (fgets(fbuf, 100, module_config_fp) == NULL)
+            {
+                break;
+            }
+        }
+        cbuf = getc(module_config_fp);
+    }
+
+    if (fclose(module_config_fp) == EOF)
+    {
+        fprintf(stderr, "Warning: Unable to close module configuration file.\n");
+    }
+}
+
+
 // =====================================================================
 // JSON Header Creation Functions
 // =====================================================================
@@ -145,15 +221,6 @@ void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data) {
 
 static uds_connection_t *g_uds_connections = NULL;
 
-const char* uds_dp_to_str(DATA_PRODUCT dp) {
-    switch (dp) {
-        case DP_BIT16_IMG: return "img16";
-        case DP_BIT8_IMG:  return "img8";
-        case DP_PH_256_IMG: return "ph256";
-        case DP_PH_1024_IMG: return "ph1024";
-        default: return "unknown";
-    }
-}
 
 // Attempts a non-blocking connection to the server's socket.
 static void uds_connect(uds_connection_t* conn) {
@@ -219,8 +286,25 @@ uds_connection_t* get_uds_connections_list_head(void) {
 }
 
 
+void check_uds_connections(struct timeval *now) {
+    uds_connection_t* conn_iter = get_uds_connections_list_head();
+    for (; conn_iter != NULL; conn_iter = conn_iter->next) {
+        if (conn_iter->fd >= 0) { // Only check active connections
+            // If no successful write in the last timeout seconds, close the socket
+            if (timeval_diff(&conn_iter->last_successful_write_time, now) > UDS_CONNECTION_TIMEOUT_US) {
+                hashpipe_warn("net_thread",
+                    "UDS connection for %s has been idle for >%lus. Forcing reconnect.",
+                    conn_iter->dp_name, UDS_CONNECTION_TIMEOUT_US / 1000000);
+                close(conn_iter->fd);
+                conn_iter->fd = -1; // Mark as disconnected
+            }
+        }
+    }
+}
+
+
 static void WritePFFToUds(int module_id, DATA_PRODUCT dp, const char* json_doc, const void* image_data, size_t image_bytes) {
-    const char* dp_name = uds_dp_to_str(dp);
+    const char* dp_name = dp_to_str(dp);
     uds_connection_t* conn = get_uds_connection(dp_name);
     if (conn == NULL) return; // Should not happen
 
@@ -305,7 +389,7 @@ static void WritePFFToUds(int module_id, DATA_PRODUCT dp, const char* json_doc, 
 }
 
 
-void WritePHSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data) {
+void write_16x16_to_uds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data) {
     if (!header || !data) return;
     char json_buffer[1024];
 
@@ -320,7 +404,7 @@ void WritePHSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data
     }
 }
 
-void WriteImgSnapshotsToUds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data) {
+void write_32x32_to_uds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data) {
     if (!header || !data) return;
     char json_buffer[4096];
 
