@@ -130,57 +130,56 @@ struct module_snapshot_buffer {
     }
 
     void update_snapshot(PACKET_HEADER *header, uint8_t *data, struct timeval *nowTime, int snapshot_interval_ms, int group_ph_frames) {
-        char acq_mode = header->acq_mode;
-        int quabo_num = header->quabo_num;
-        DATA_PRODUCT dp = acq_mode_to_dp(acq_mode, group_ph_frames);
-        snapshot_t *s = this->get_snapshot(dp);
+    char acq_mode = header->acq_mode;
+    int quabo_num = header->quabo_num;
+    DATA_PRODUCT dp = acq_mode_to_dp(acq_mode, group_ph_frames);
+    snapshot_t *s = this->get_snapshot(dp);
+    if (!s) return; // Snapshot for this data product not found
 
-        // If timestamp difference exceeds snapshot interval, write snapshot to the unix-domain socket for this data product
-        bool write_snapshot = false;
-        uint64_t tdiff = timeval_diff(&s->last_update_time, nowTime);
-        if ((tdiff > snapshot_interval_ms * 1000))
-        {
-            write_snapshot = true;
+    bool write_snapshot = false;
+    uint64_t tdiff = timeval_diff(&s->last_update_time, nowTime);
+    if (tdiff > snapshot_interval_ms * 1000) {
+        write_snapshot = true;
+    }
+
+    bool is_single_quabo = (dp == DP_PH_256_IMG);
+    bool is_complete = false;
+
+    if (is_single_quabo) {
+        quabo16_to_quabo16_copy(data, quabo_num, s->data);
+        memcpy(&s->headers[0], header, sizeof(PACKET_HEADER));
+        is_complete = true;
+    } else {
+        s->quabo_bitmap |= 1 << quabo_num;
+        memcpy(&s->headers[quabo_num], header, sizeof(PACKET_HEADER));
+
+        if (bytes_per_pixel(dp) == 1) {
+            quabo8_to_module8_copy(data, quabo_num, s->data);
+        } else if (bytes_per_pixel(dp) == 2) {
+            quabo16_to_module16_copy(data, quabo_num, s->data);
         }
 
-        if (dp == DP_PH_256_IMG) {
-            // For PH 256 images, use only the 0th index of the header and data buffers.
-            s->quabo_bitmap = 0x01; // Only one quabo for PH 256
-            // memcpy(&s->headers[0], header, sizeof(PACKET_HEADER));
-            quabo16_to_quabo16_copy(data, quabo_num, s->data);
-
-            if (write_snapshot) {
-                write_16x16_to_uds(dp, header, s->data);
-                // memset(s->headers, 0, sizeof(s->headers));
-                s->last_update_time.tv_sec = nowTime->tv_sec;
-                s->last_update_time.tv_usec = nowTime->tv_usec;
-            }
-            memset(s->data, 0, sizeof(s->data));
-        } else {
-            // Require 4 quabo images 
-            s->quabo_bitmap |= 1 << quabo_num;
-            memcpy(&s->headers[quabo_num], header, sizeof(PACKET_HEADER));
-
-            if (bytes_per_pixel(dp) == 1) {
-                quabo8_to_module8_copy(data, quabo_num, s->data);
-            } else if (bytes_per_pixel(dp) == 2) {
-                quabo16_to_module16_copy(data, quabo_num, s->data);
-            } else {
-                fprintf(stderr, "Unsupported data product for snapshot: %d\n", dp);
-                return; // Unsupported data product
-            }
-            if (s->quabo_bitmap == 0xf) {
-                if (write_snapshot) {
-                    write_16x16_to_uds(dp, s->headers, s->data);
-                    s->last_update_time.tv_sec = nowTime->tv_sec;
-                    s->last_update_time.tv_usec = nowTime->tv_usec;
-                }
-                memset(s->headers, 0, sizeof(s->headers));
-                memset(s->data, 0, sizeof(s->data));
-                s->quabo_bitmap = 0;
-            }
+        if (s->quabo_bitmap == 0xf) {
+            is_complete = true;
         }
     }
+
+    if (is_complete && write_snapshot) {
+        if (is_single_quabo) {
+            write_16x16_to_uds(dp, &s->headers[0], s->data);
+        } else {
+            write_32x32_to_uds(dp, s->headers, s->data);
+        }
+        
+        // Reset for next snapshot
+        s->last_update_time.tv_sec = nowTime->tv_sec;
+        s->last_update_time.tv_usec = nowTime->tv_usec;
+        memset(s->headers, 0, sizeof(s->headers));
+        memset(s->data, 0, sizeof(s->data));
+        s->quabo_bitmap = 0;
+    }
+}
+
 
 
     ~module_snapshot_buffer() {

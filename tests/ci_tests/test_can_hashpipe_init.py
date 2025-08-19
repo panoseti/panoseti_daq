@@ -63,13 +63,14 @@ def test_filesystem_outputs_progress(daq_env):
     assert progressed, "Expected at least one module to have updated PFF outputs."
 
 @pytest.mark.usefixtures("daq_env")
-def test_uds_ph256_frames(daq_env):
+def test_uds_ph_frames(daq_env):
     """
-    The tests act as the UDS SERVER. Verify that the ph256 server accepted a connection
+    The tests act as the UDS SERVER. Verify that the ph256 or ph1024 server accepted a connection
     and received at least one frame from hashpipe within a reasonable time.
     """
     uds_mgr = daq_env["uds_manager"]
-    srv = uds_mgr.servers["ph256"]
+    ph_dp = daq_env["ph_dp"]
+    srv = uds_mgr.servers[ph_dp]
 
     # Wait up to 10s for a client connection (hashpipe)
     start = time.time()
@@ -79,13 +80,13 @@ def test_uds_ph256_frames(daq_env):
             connected = True
             break
         time.sleep(0.2)
-    assert connected, "ph256 UDS server did not receive a connection from hashpipe within 10s"
+    assert connected, f"{ph_dp} UDS server did not receive a connection from hashpipe within 10s"
 
     # Wait a bit for at least one frame
     start = time.time()
     while time.time() - start < 10 and srv.frames_received == 0:
         time.sleep(0.2)
-    assert srv.frames_received > 0, "ph256 UDS server did not receive any frames within 10s"
+    assert srv.frames_received > 0, f"{ph_dp} UDS server did not receive any frames within 10s"
 
 # @pytest.mark.usefixtures("daq_env")
 # def test_uds_img16_frames(daq_env):

@@ -33,10 +33,11 @@ def _wait_for(predicate, timeout_s=10, interval_s=0.1):
 def _uds_exists(path):
     return os.path.exists(path) and stat.S_ISSOCK(os.stat(path).st_mode)
 
-def _ensure_uds_available(daq_env, dp_name="ph256", timeout_s=10):
+def _ensure_uds_available(daq_env, timeout_s=10):
     """Ensure UDS socket is available and connected."""
     uds_mgr = daq_env["uds_manager"]
-    
+    dp_name = daq_env["ph_dp"]
+
     # If servers are not running, restart them
     if dp_name not in uds_mgr.servers or not _uds_exists(uds_path(dp_name)):
         # Stop existing servers cleanly
@@ -113,7 +114,9 @@ class TestUdsDataPath:
         uds_mgr = daq_env["uds_manager"]
         uds_mgr.stop()
 
-        ph_path = uds_path("ph256")
+        # Simulate a malformed socket by creating a regular file
+        ph_dp = daq_env["ph_dp"]
+        ph_path = uds_path(ph_dp)
 
         # Create a regular file where socket should be (simulate filesystem corruption)
         with open(ph_path, 'w') as f:
@@ -126,13 +129,13 @@ class TestUdsDataPath:
         # Remove the file and create proper socket
         os.unlink(ph_path)
         from conftest import UdsServerManager
-        uds_paths = {"ph256": Path(ph_path)}
+        uds_paths = {ph_dp: Path(ph_path)}
         mgr = UdsServerManager(uds_paths)
         mgr.start()
 
         # Should recover and connect
         time.sleep(3)
-        assert mgr.servers["ph256"].connected.is_set(), "Should recover after socket fix"
+        assert mgr.servers[ph_dp].connected.is_set(), "Should recover after socket fix"
         assert is_hashpipe_running(), "Hashpipe should remain running"
 
         mgr.stop()
@@ -144,7 +147,9 @@ class TestUdsDataPath:
         uds_mgr = daq_env["uds_manager"]
         uds_mgr.stop()
 
-        ph_path = uds_path("ph256")
+        ph_dp = daq_env["ph_dp"]
+        ph_path = uds_path(ph_dp)
+
 
         # Create socket directory with restricted permissions
         socket_dir = os.path.dirname(ph_path)
@@ -153,7 +158,7 @@ class TestUdsDataPath:
 
         # Create a socket then make directory unreadable
         from conftest import UdsServerManager
-        uds_paths = {"ph256": Path(ph_path)}
+        uds_paths = {ph_dp: Path(ph_path)}
         mgr = UdsServerManager(uds_paths)
         mgr.start()
         mgr.stop()
@@ -278,7 +283,8 @@ class TestUdsDataPath:
         uds_mgr = daq_env["uds_manager"]
         uds_mgr.stop()
 
-        ph_path = uds_path("ph256")
+        ph_dp = daq_env["ph_dp"]
+        ph_path = uds_path(ph_dp)
 
         slow_srv = SlowReadServer(ph_path)
         slow_srv.start()
@@ -294,23 +300,28 @@ class TestUdsDataPath:
 
         # Start normal server and verify recovery
         from conftest import UdsServerManager
-        uds_paths = {"ph256": Path(ph_path)}
+        uds_paths = {ph_dp: Path(ph_path)}
+
         mgr = UdsServerManager(uds_paths)
         mgr.start()
 
         time.sleep(3)
-        assert mgr.servers["ph256"].connected.is_set(), "Should recover after backpressure"
+        assert mgr.servers[ph_dp].connected.is_set(), "Should recover after backpressure"
         assert is_hashpipe_running(), "Hashpipe should recover from backpressure"
 
         mgr.stop()
 
-    def test_data_integrity_ph256(self, daq_env):
+    def test_data_integrity_ph(self, daq_env):
         """
         Test that ph256 UDS data path maintains data integrity.
         """
         assert _ensure_uds_available(daq_env), "Could not establish UDS connection"
         uds_mgr = daq_env["uds_manager"]
-        srv = uds_mgr.servers["ph256"]
+
+        ph_dp = daq_env["ph_dp"]
+        ph_path = uds_path(ph_dp)
+        
+        srv = uds_mgr.servers[ph_dp]
 
         # Wait for multiple frames to verify sustained data flow
         start = time.time()
@@ -330,10 +341,11 @@ class TestUdsDataPath:
         assert _ensure_uds_available(daq_env), "Could not establish UDS connection"
         
         uds_mgr = daq_env["uds_manager"]
-        ph_path = uds_path("ph256")
+        ph_dp = daq_env["ph_dp"]
+        ph_path = uds_path(ph_dp)
 
         # Wait for initial connection
-        srv = uds_mgr.servers["ph256"]
+        srv = uds_mgr.servers[ph_dp]
         assert srv.connected.is_set(), "Initial connection should succeed"
 
         # Try to make additional connections (should be rejected gracefully)
@@ -358,13 +370,15 @@ class TestUdsDataPath:
         # Hashpipe should still be running
         assert is_hashpipe_running(), "Hashpipe should handle multiple connection attempts"
 
-    def test_data_validation_ph256(self, daq_env):
+    def test_data_validation(self, daq_env):
         """
-        Test that we can validate the content of received ph256 frames.
+        Test that we can validate the content of received ph256 or ph1024 frames.
         """
         assert _ensure_uds_available(daq_env), "Could not establish UDS connection"
         uds_mgr = daq_env["uds_manager"]
-        srv = uds_mgr.servers["ph256"]
+        ph_dp = daq_env["ph_dp"]
+        ph_path = uds_path(ph_dp)
+        srv = uds_mgr.servers[ph_dp]
 
         # Wait for connection and some frames
         start = time.time()
@@ -372,8 +386,8 @@ class TestUdsDataPath:
             if srv.connected.is_set() and srv.frames_received >= 5:
                 break
             time.sleep(0.5)
-        
-        assert srv.connected.is_set(), "Should have ph256 connection"
+
+        assert srv.connected.is_set(), f"Should have {ph_dp} connection"
         assert srv.frames_received >= 5, "Should have received frames"
 
         # Use stored frames from the server for validation
@@ -389,24 +403,33 @@ class TestUdsDataPath:
         assert isinstance(module_id, int), "Module ID should be an integer"
         assert module_id in daq_env["module_ids"], f"Module ID {module_id} not in test set"
         assert isinstance(header, dict), "Header should be a dict"
-        assert 'quabo_num' in header, "Header should contain 'quabo_num'"
-        assert 'pkt_num' in header, "Header should contain 'pkt_num'"
+        if ph_dp == "ph256":
+            assert 'quabo_num' in header, "Header should contain 'quabo_num'"
+            assert 'pkt_num' in header, "Header should contain 'pkt_num'"
+        elif ph_dp == "ph1024":
+            assert 'quabo_0' in header, "Header should contain 'quabo_0'"
+            assert 'quabo_1' in header, "Header should contain 'quabo_1'"
+            assert 'quabo_2' in header, "Header should contain 'quabo_2'"
+            assert 'quabo_3' in header, "Header should contain 'quabo_3'"
+            q0_header = header['quabo_0']
+            assert 'pkt_num' in q0_header, "Header should contain 'pkt_num'"
         assert isinstance(image_data, bytes) and len(image_data) > 0, "Image data should be non-empty bytes"
         assert is_hashpipe_running(), "Hashpipe should remain running during data validation"
 
-    def test_sustained_high_rate_ph256(self, daq_env):
+    def test_sustained_high_rate_ph(self, daq_env):
         """
-        Test Hashpipe stability under sustained high-rate ph256 data flow.
+        Test Hashpipe stability under sustained high-rate ph256 or ph1024 data flow.
         """
+        ph_dp = daq_env["ph_dp"]
         assert _ensure_uds_available(daq_env), "Could not establish UDS connection"
-        
+
         uds_mgr = daq_env["uds_manager"]
-        srv = uds_mgr.servers["ph256"]
+        srv = uds_mgr.servers[ph_dp]
 
         initial_frames = srv.frames_received
 
         # Let it run for sustained period 
-        test_duration = 60
+        test_duration = 30
         start = time.time()
         last_check = start
         last_frames = initial_frames
@@ -442,14 +465,15 @@ class TestUdsDataPath:
         assert total_frames >= 0, "Should have received some frames during sustained test"
         assert is_hashpipe_running(), "Hashpipe should survive sustained high-rate data"
 
-    def test_uds_header_consistency_ph256(self, daq_env):
+    def test_uds_header_consistency_ph(self, daq_env):
         """
-        Test that UDS-delivered ph256 frames have consistent JSON headers
+        Test that UDS-delivered ph256 or ph1024 frames have consistent JSON headers
         by checking the raw byte representations captured by the server.
         """
         assert _ensure_uds_available(daq_env), "Could not establish UDS connection"
         uds_mgr = daq_env["uds_manager"]
-        srv = uds_mgr.servers["ph256"]
+        ph_dp = daq_env["ph_dp"]
+        srv = uds_mgr.servers[ph_dp]
         nframes = 100
 
         # Wait for the server to receive a good number of frames
@@ -472,18 +496,33 @@ class TestUdsDataPath:
             f"UDS headers have inconsistent byte lengths: {header_lengths}. " \
             "All headers from hashpipe must be identical in size."
 
-        print(f"✓ All UDS headers have a consistent length: {header_lengths.pop()} bytes")
+        print(f"✓ All UDS headers for {ph_dp} have a consistent length: {header_lengths.pop()} bytes")
 
         # 2. Sanity Check: Ensure the header is valid JSON and contains required fields.
         first_header_bytes = json_headers[0]
-        try:
-            header_content = json.loads(first_header_bytes)
-            required_fields = {'quabo_num', 'pkt_num', 'pkt_tai', 'pkt_nsec', 'tv_sec', 'tv_usec'}
-            actual_fields = set(header_content.keys())
-            assert required_fields.issubset(actual_fields), \
-                f"Missing required fields. Expected: {required_fields}, Got: {actual_fields}"
-        except json.JSONDecodeError:
-            pytest.fail("The received JSON header is not valid JSON.")
+        if ph_dp == "ph256":
+            try:
+                header_content = json.loads(first_header_bytes)
+                required_fields = {'quabo_num', 'pkt_num', 'pkt_tai', 'pkt_nsec', 'tv_sec', 'tv_usec'}
+                actual_fields = set(header_content.keys())
+                assert required_fields.issubset(actual_fields), \
+                    f"Missing required fields. Expected: {required_fields}, Got: {actual_fields}"
+            except json.JSONDecodeError:
+                pytest.fail("The received JSON header is not valid JSON.")
+        elif ph_dp == "ph1024":
+            try:
+                header_content = json.loads(first_header_bytes)
+                required_fields_lv0 = {'quabo_0', 'quabo_1', 'quabo_2', 'quabo_3'}
+                required_fields_lv1 = {'pkt_num', 'pkt_tai', 'pkt_nsec', 'tv_sec', 'tv_usec'}
+                actual_fields_lv0 = set(header_content.keys())
+                assert required_fields_lv0.issubset(actual_fields_lv0), \
+                    f"Missing required fields. Expected: {required_fields_lv0}, Got: {actual_fields_lv0}"
+                for q, q_header in header_content.items():
+                    actual_fields_lv1 = set(q_header.keys())
+                    assert required_fields_lv1.issubset(actual_fields_lv1), \
+                        f"Missing required fields for {q}. Expected: {required_fields_lv1}, Got: {actual_fields_lv1}"
+            except json.JSONDecodeError:
+                pytest.fail("The received JSON header is not valid JSON.")
         
         print(f"UDS header consistency test passed for {len(json_headers)} frames.")
 

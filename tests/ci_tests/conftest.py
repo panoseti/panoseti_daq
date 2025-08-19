@@ -20,6 +20,7 @@ RUN_NAME = "obs_ci_run"
 MODULE_IDS = [1, 254]
 PCAP_FILE = "/app/test_data.pcapng"
 UDS_TEMPLATE = "/tmp/hashpipe_grpc.dp_{dp_name}.sock"
+GROUP_PH_FRAMES = 1  # Default to not grouping frames
 
 def _ensure_dirs_and_module_config():
     cfg_str = ""
@@ -169,6 +170,7 @@ def daq_env():
         "--run_dir", str(BASE_DIR),
         "--max_file_size_mb", "5",
         "--bindhost", "lo",
+        "--group_ph_frames", str(GROUP_PH_FRAMES)
     ]
     for mid in MODULE_IDS:
         start_daq.extend(["--module_id", str(mid)])
@@ -190,6 +192,8 @@ def daq_env():
         "base_dir": BASE_DIR,
         "run_name": RUN_NAME,
         "module_ids": MODULE_IDS,
+        "group_ph_frames": GROUP_PH_FRAMES,
+        "ph_dp": "ph256" if GROUP_PH_FRAMES == 0 else "ph1024",
         "uds_paths": uds_paths,
         "uds_manager": uds_mgr,
         "tcpreplay_proc": tcpreplay_proc,

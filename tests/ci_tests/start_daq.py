@@ -12,6 +12,7 @@ def _parse_args(argv):
     module_ids = []
     bindhost = "0.0.0.0"
     obs = "TEST"
+    group_ph_frames = 0
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -25,12 +26,14 @@ def _parse_args(argv):
             i += 1; bindhost = argv[i]
         elif a == "--obs":
             i += 1; obs = argv[i]
+        elif a == "--group_ph_frames":
+            i += 1; group_ph_frames = int(argv[i])
         else:
             raise SystemExit(f"Unknown arg {a}\n{USAGE}")
         i += 1
     if not run_dir or not module_ids:
         raise SystemExit(f"Missing required args\n{USAGE}")
-    return run_dir, max_file_size_mb, bindhost, obs, module_ids
+    return run_dir, max_file_size_mb, bindhost, group_ph_frames, obs, module_ids
 
 def _write_module_config(run_dir, run_name, module_ids):
     cfg_dir = os.path.join(run_dir, run_name)
@@ -40,7 +43,7 @@ def _write_module_config(run_dir, run_name, module_ids):
         f.write("".join(f"{m}\n" for m in module_ids))
     return cfg_path
 
-def _write_run_script(run_dir, run_name, bindhost, max_file_size_mb, obs):
+def _write_run_script(run_dir, run_name, bindhost, max_file_size_mb, group_ph_frames, obs):
     # Hashpipe runs with cwd = run_dir (parent), RUNDIR is run_name
     script_path = os.path.join(run_dir, "run_hashpipe.sh")
     cfg_rel = f"{run_name}/module.config"
@@ -53,7 +56,7 @@ def _write_run_script(run_dir, run_name, bindhost, max_file_size_mb, obs):
         f'-o RUNDIR={run_name} '
         f'-o CONFIG={cfg_rel} '
         f'-o MAXFILESIZE={max_file_size_mb} '
-        f'-o GROUPPHFRAMES=0 '
+        f'-o GROUPPHFRAMES={group_ph_frames} '
         f'-o OBS={obs} '
         f'net_thread compute_thread output_thread'
     ]
@@ -79,7 +82,7 @@ def _find_hashpipe_pid(expected_tokens, retries=30, delay=0.5):
     return None
 
 def main():
-    run_dir, max_file_size_mb, bindhost, obs, module_ids = _parse_args(sys.argv)
+    run_dir, max_file_size_mb, bindhost, group_ph_frames, obs, module_ids = _parse_args(sys.argv)
     # The tests set cwd to run_dir’s parent (/tmp/ci_run_dir). We ensure directories exist.
     os.makedirs(run_dir, exist_ok=True)
 
@@ -89,7 +92,7 @@ def main():
         os.makedirs(os.path.join(run_dir, f"module_{mid}", run_name), exist_ok=True)
 
     cfg_path = _write_module_config(run_dir, run_name, module_ids)
-    script_path = _write_run_script(run_dir, run_name, bindhost, max_file_size_mb, obs)
+    script_path = _write_run_script(run_dir, run_name, bindhost, max_file_size_mb, group_ph_frames, obs)
 
     # Launch the wrapper script detached from stdio
     proc = subprocess.Popen(

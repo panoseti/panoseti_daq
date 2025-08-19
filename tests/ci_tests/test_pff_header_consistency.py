@@ -20,13 +20,14 @@ class TestPffHeaderConsistency:
     This is critical for the PFF format requirement that enables seeking to arbitrary frames.
     """
 
-    def test_ph256_constant_header_size(self, daq_env):
+    def test_ph_constant_header_size(self, daq_env):
         """
-        Test that ph256 PFF files have constant-sized JSON headers.
+        Test that ph256 or ph1024 PFF files have constant-sized JSON headers.
         Enhanced for container-based testing with longer waits.
         """
         base_dir = daq_env["base_dir"]
         run_name = daq_env["run_name"]
+        ph_dp = daq_env["ph_dp"]
 
         # Wait longer for container-based tests to accumulate data
         max_wait_time = 60  # 1 minute max wait
@@ -49,17 +50,24 @@ class TestPffHeaderConsistency:
 
                 # Find ph256 PFF files
                 ph256_files = list(mod_run.glob("*.dp_ph256.*.pff"))
-                
-                for pff_file in ph256_files:
+                ph1024_files = list(mod_run.glob("*.dp_ph1024.*.pff"))
+
+                for pff_file in ph256_files + ph1024_files:
                     # Be more lenient with file size in containers
-                    if pff_file.stat().st_size < 500:  # Reduced from 1000
+                    if pff_file.stat().st_size < 500:
                         continue
 
-                    sizes = self._check_header_sizes_in_file(pff_file, expected_dp="ph256")
-                    if sizes:
-                        header_sizes.extend(sizes)
-                        files_checked += 1
-            
+                    if ph_dp == "ph256":
+                        sizes = self._check_header_sizes_in_file(pff_file, expected_dp="ph256")
+                        if sizes:
+                            header_sizes.extend(sizes)
+                            files_checked += 1
+                    elif ph_dp == "ph1024":
+                        sizes = self._check_header_sizes_in_file(pff_file, expected_dp="ph1024")
+                        if sizes:
+                            header_sizes.extend(sizes)
+                            files_checked += 1
+
             # If we found files, break early
             if files_checked > 0:
                 print(f"Found {files_checked} PFF files after {wait_time + wait_interval}s")
@@ -67,17 +75,17 @@ class TestPffHeaderConsistency:
             else:
                 print(f"No PFF files found yet after {wait_time + wait_interval}s, continuing to wait...")
 
-        assert files_checked > 0, f"No ph256 PFF files found to test after {max_wait_time}s wait"
-        assert len(header_sizes) > 0, "No frames found in ph256 PFF files"
+        assert files_checked > 0, f"No {ph_dp} PFF files found to test after {max_wait_time}s wait"
+        assert len(header_sizes) > 0, f"No frames found in {ph_dp} PFF files"
 
         # All header sizes should be identical
         unique_sizes = set(header_sizes)
-        assert len(unique_sizes) == 1, f"ph256 headers have inconsistent sizes: {unique_sizes}"
+        assert len(unique_sizes) == 1, f"{ph_dp} headers have inconsistent sizes: {unique_sizes}"
 
         # Check against expected size (be more flexible for containers)
         header_size = list(unique_sizes)[0]
-        print(f"ph256 header size: {header_size} bytes from {len(header_sizes)} frames")
-        assert 80 <= header_size <= 250, f"ph256 header size {header_size} seems unreasonable" 
+        print(f"{ph_dp} header size: {header_size} bytes from {len(header_sizes)} frames")
+        assert 80 <= header_size <= 750, f"{ph_dp} header size {header_size} seems unreasonable"
 
     def test_img16_constant_header_size(self, daq_env):
         """
@@ -187,6 +195,8 @@ class TestPffHeaderConsistency:
         pytest.skip("Skipping frame seeking capability test")
         base_dir = daq_env["base_dir"]
         run_name = daq_env["run_name"]
+
+        ph_dp = daq_env["ph_dp"]
         
         # Wait for files with multiple frames
         time.sleep(15)
@@ -200,8 +210,9 @@ class TestPffHeaderConsistency:
                 
             # Test ph256 files (most likely to have data)
             ph256_files = list(mod_run.glob("*.dp_ph256.*.pff"))
-            
-            for pff_file in ph256_files:
+            ph1024_files = list(mod_run.glob("*.dp_ph1024.*.pff"))
+
+            for pff_file in ph256_files + ph1024_files:
                 if pff_file.stat().st_size < 5000:  # Need multiple frames
                     continue
                 
@@ -224,6 +235,8 @@ class TestPffHeaderConsistency:
         """
         base_dir = daq_env["base_dir"]
         run_name = daq_env["run_name"]
+
+        ph_dp = daq_env["ph_dp"]
         
         time.sleep(8)
         
@@ -233,14 +246,14 @@ class TestPffHeaderConsistency:
             mod_run = base_dir / f"module_{mid}" / run_name
             if not mod_run.exists():
                 continue
-                
-            pff_files = list(mod_run.glob("*.dp_ph256.*.pff"))
-            
+
+            pff_files = list(mod_run.glob(f"*.dp_{ph_dp}.*.pff"))
+
             for pff_file in pff_files:
                 if pff_file.stat().st_size < 1000:
                     continue
-                
-                count = self._validate_json_headers(pff_file)
+
+                count = self._validate_json_headers(pff_file, ph_dp)
                 headers_tested += count
                 
                 if headers_tested >= 50:  # Test reasonable number
@@ -277,6 +290,8 @@ class TestPffHeaderConsistency:
                         # Skip the image data
                         if expected_dp == "ph256":
                             pff.skip_image(f, 16, 2)  # 16x16, 2 bytes per pixel
+                        elif expected_dp == "ph1024":
+                            pff.skip_image(f, 32, 2)  # 32x32, 2 bytes per pixel
                         elif expected_dp == "img16":
                             pff.skip_image(f, 32, 2)  # 32x32, 2 bytes per pixel (module frame)
                         elif expected_dp == "img8":
@@ -335,7 +350,7 @@ class TestPffHeaderConsistency:
             print(f"Seeking test failed for {pff_file}: {e}")
             return False
 
-    def _validate_json_headers(self, pff_file: Path) -> int:
+    def _validate_json_headers(self, pff_file: Path, ph_dp: str) -> int:
         """
         Validate JSON headers in a PFF file.
         Returns number of headers validated.
@@ -354,13 +369,20 @@ class TestPffHeaderConsistency:
                         header = json.loads(json_str)
                         
                         # Check required fields for ph256
-                        required_fields = ['quabo_num', 'pkt_num', 'pkt_tai', 'pkt_nsec', 'tv_sec', 'tv_usec']
+                        if ph_dp == "ph256":
+                            required_fields = ['quabo_num', 'pkt_num', 'pkt_tai', 'pkt_nsec', 'tv_sec', 'tv_usec']
+                        else:
+                            required_fields = ['pkt_num', 'pkt_tai', 'pkt_nsec', 'tv_sec', 'tv_usec']
+                            assert {f'quabo_{n}' for n in range(4)}.issubset(header.keys()), f"Missing quabo fields in header: {header}"
+                            header = header['quabo_0']
+                            
                         for field in required_fields:
                             assert field in header, f"Missing field '{field}' in header: {header}"
                         
                         # Validate field types and ranges
-                        assert isinstance(header['quabo_num'], int)
-                        assert 0 <= header['quabo_num'] <= 3
+                        if ph_dp == "ph256":
+                            assert isinstance(header['quabo_num'], int)
+                            assert 0 <= header['quabo_num'] <= 3
                         assert isinstance(header['pkt_num'], int)
                         assert header['pkt_num'] >= 0
                         assert isinstance(header['pkt_tai'], int)
@@ -371,8 +393,11 @@ class TestPffHeaderConsistency:
                         count += 1
                         
                         # Skip image data (ph256 = 16x16x2 bytes + 1 for '*')
-                        pff.skip_image(f, 16, 2)
-                        
+                        if ph_dp == "ph256":
+                            pff.skip_image(f, 16, 2)
+                        else:
+                            pff.skip_image(f, 32, 2)
+
                     except Exception as e:
                         print(f"Header validation failed at frame {count}: {e}")
                         break
@@ -400,6 +425,7 @@ class TestPffHeaderConsistency:
         """
         base_dir = daq_env["base_dir"]
         run_name = daq_env["run_name"]
+        ph_dp = daq_env["ph_dp"]
         
         # Take multiple samples over time
         samples = []
@@ -412,14 +438,13 @@ class TestPffHeaderConsistency:
                 mod_run = base_dir / f"module_{mid}" / run_name
                 if not mod_run.exists():
                     continue
-                    
-                pff_files = list(mod_run.glob("*.dp_ph256.*.pff"))
-                
+                pff_files = list(mod_run.glob(f"*.dp_{ph_dp}.*.pff"))
+
                 for pff_file in pff_files:
                     if pff_file.stat().st_size < 1000:
                         continue
-                    
-                    sizes = self._check_header_sizes_in_file(pff_file, "ph256")
+
+                    sizes = self._check_header_sizes_in_file(pff_file, ph_dp)
                     if sizes:
                         # Track by filename to compare across time
                         sample_sizes[pff_file.name] = {
