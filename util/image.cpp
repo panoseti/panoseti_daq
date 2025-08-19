@@ -17,7 +17,7 @@
 #define ROTATE_AND_OP                                                   \
     switch (iquabo)                                                     \
     {                                                                   \
-    case 3:                                                             \
+    case 1:                                                             \
         for (int i = 0; i < SRC_DIM; i++)                               \
         {                                                               \
             for (int j = 0; j < SRC_DIM; j++)                           \
@@ -35,7 +35,7 @@
             }                                                           \
         }                                                               \
         break;                                                          \
-    case 1:                                                             \
+    case 3:                                                             \
         for (int i = 0; i < SRC_DIM; i++)                               \
         {                                                               \
             for (int j = 0; j < SRC_DIM; j++)                           \
