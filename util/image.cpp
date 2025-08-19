@@ -17,21 +17,12 @@
 #define ROTATE_AND_OP                                                   \
     switch (iquabo)                                                     \
     {                                                                   \
-    case 0:                                                             \
+    case 3:                                                             \
         for (int i = 0; i < SRC_DIM; i++)                               \
         {                                                               \
             for (int j = 0; j < SRC_DIM; j++)                           \
             {                                                           \
-                (*out)[j][SRC_DIM - i - 1] OP(*in)[i][j];               \
-            }                                                           \
-        }                                                               \
-        break;                                                          \
-    case 1:                                                             \
-        for (int i = 0; i < SRC_DIM; i++)                               \
-        {                                                               \
-            for (int j = 0; j < SRC_DIM; j++)                           \
-            {                                                           \
-                (*out)[SRC_DIM - i - 1][DST_DIM - j - 1] OP(*in)[i][j]; \
+                (*out)[j][DST_DIM - i - 1] OP(*in)[i][j];               \
             }                                                           \
         }                                                               \
         break;                                                          \
@@ -40,11 +31,20 @@
         {                                                               \
             for (int j = 0; j < SRC_DIM; j++)                           \
             {                                                           \
+                (*out)[DST_DIM - i - 1][DST_DIM - j - 1] OP(*in)[i][j]; \
+            }                                                           \
+        }                                                               \
+        break;                                                          \
+    case 1:                                                             \
+        for (int i = 0; i < SRC_DIM; i++)                               \
+        {                                                               \
+            for (int j = 0; j < SRC_DIM; j++)                           \
+            {                                                           \
                 (*out)[DST_DIM - j - 1][i] OP(*in)[i][j];               \
             }                                                           \
         }                                                               \
         break;                                                          \
-    case 3:                                                             \
+    case 0:                                                             \
         for (int i = 0; i < SRC_DIM; i++)                               \
         {                                                               \
             for (int j = 0; j < SRC_DIM; j++)                           \
