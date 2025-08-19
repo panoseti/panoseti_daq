@@ -26,7 +26,7 @@
 
 
 static int group_ph_frames;
-static module_snapshot_buffer_t *snapshot_buffers;
+static module_snapshot_buffer *snapshot_buffers;
 
 // Initialization function for Hashpipe.
 // This function is called once when the thread is created
@@ -119,7 +119,7 @@ static int init(hashpipe_thread_args_t *args)
 
     // Initialize snapshot buffers
     snapshot_buffers = NULL;
-    init_module_snapshot_buffers(module_config, snapshot_buffers);
+    init_module_snapshot_buffers(module_config, &snapshot_buffers);
     if (snapshot_buffers == NULL) {
         hashpipe_error("net_thread", "Failed to initialize snapshot buffers\n");
         pthread_exit(NULL);
@@ -250,15 +250,6 @@ static void *run(hashpipe_thread_args_t *args)
     {
         hashpipe_pktsock_release_frame(p_frame);
     }
-    // let's create snapshot files here
-    // char ssmovie[128];
-    // char ssph[128];
-    // snprintf(ssmovie, sizeof(ssmovie), "%s/module_0/obs_snapshot/start_0.img16.seqno_0.pff", ssdir);
-    // snprintf(ssph, sizeof(ssph), "%s/module_0/obs_snapshot/start_0.ph256.seqno_0.pff", ssdir);
-    // hashpipe_info(__FUNCTION__, "Movie snapshot: %s", ssmovie);
-    // hashpipe_info(__FUNCTION__, "PH snapshot: %s", ssph);
-    // FILE *mov16_fp = fopen(ssmovie, "w");
-    // FILE *ph_fp = fopen(ssph, "w");
 
     // track last successful grpc snapshot send time
     struct timeval last_idle_check_time;
@@ -371,57 +362,15 @@ static void *run(hashpipe_thread_args_t *args)
             }
 
             // Fetch the snapshot buffer for the current module
-            module_snapshot_buffer_t *snapshot_buffer = get_snapshot_buffer(blockHeader->pkt_head[i].mod_num, snapshot_buffers);
+            module_snapshot_buffer *snapshot_buffer = get_snapshot_buffer(blockHeader->pkt_head[i].mod_num, snapshot_buffers);
             if (snapshot_buffer) {
                 snapshot_buffer->update_snapshot(
                     &blockHeader->pkt_head[i],
                     pkt_data + BYTE_PKT_HEADER,
                     &nowTime,
-                    ssint
+                    ssint,
+                    group_ph_frames
                 );
-                // PACKET_HEADER pkt_head = blockHeader->pkt_head[i];
-
-                // // char acq_mode = pkt_head.acq_mode; 
-                // // DATA_PRODUCT dp = acq_mode_to_dp(acq_mode, group_ph_frames);
-                // if (dp == DP_PH_256_IMG || dp == DP_PH_1024_IMG)
-                // {
-                //     snapshot_buffer->update_snapshot(&blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
-                //     // for PH snapshots
-                //     tdiff = timeval_diff(&lastPHTime, &nowTime);
-                //     if (tdiff > ssint * 1000)
-                //     {
-                //         // WritePHSnapshots(ph_fp, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
-                //         WritePHSnapshotsToUds(DP_PH_256_IMG, &blockHeader->pkt_head[i], pkt_data + BYTE_PKT_HEADER);
-                //         lastPHTime.tv_sec = nowTime.tv_sec;
-                //         lastPHTime.tv_usec = nowTime.tv_usec;
-                //     }
-                // }
-                // else if (dp == DP_BIT16_IMG)
-                // {
-                //     // if we get four packets from four different quabos,
-                //     // imgfull will be 0xf.
-                //     // then we will write the data into the snapshot file.
-                //     quabo_num = blockHeader->pkt_head[i].quabo_num;
-                //     imgfull |= 1 << quabo_num;
-                //     // TODO: group the mov images?
-                //     quabo16_to_module16_copy(pkt_data + BYTE_PKT_HEADER, quabo_num, oimgbuf);
-                //     memcpy(imgbuf + quabo_num * 512, oimgbuf, 512);
-                //     memcpy(&imgheader[quabo_num], &blockHeader->pkt_head[i], sizeof(PACKET_HEADER));
-                //     if (imgfull == 0xf)
-                //     {
-                //         imgfull = 0;
-                //         // for Img16 snapshots
-                //         tdiff = timeval_diff(&lastImg16Time, &nowTime);
-                //         if (tdiff > ssint * 1000)
-                //         {
-                //             // DATA_PRODUCT img_dp = (imgheader[0].acq_mode == 0x03) ? DP_BIT8_IMG : DP_BIT16_IMG;
-                //             // WriteImgSnapshots(mov16_fp, imgheader, imgbuf);
-                //             WriteImgSnapshotsToUds(dp, imgheader, imgbuf);
-                //             lastImg16Time.tv_sec = nowTime.tv_sec;
-                //             lastImg16Time.tv_usec = nowTime.tv_usec;
-                //         }
-                //     }
-                // }
             }
 
             // ==== End snapshot code ====

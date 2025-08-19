@@ -12,15 +12,12 @@
 #include <sys/stat.h>
 #include <netinet/in.h> 
 #include <poll.h>
-#include <sys/time.h>
 
 #include "snapshot.h"
 #include "hashpipe.h"
-#include "pff.h"
-#include "databuf.h" 
 
-// get the time difference
-static uint64_t timeval_diff(struct timeval *start, struct timeval *end)
+// get the time difference in microseconds (usec)
+uint64_t timeval_diff(struct timeval *start, struct timeval *end)
 {
     struct timeval diff;
     diff.tv_sec = end->tv_sec - start->tv_sec;
@@ -34,8 +31,8 @@ static uint64_t timeval_diff(struct timeval *start, struct timeval *end)
     return diff.tv_sec * 1000000 + diff.tv_usec;
 }
 
-module_snapshot_buffer_t* get_snapshot_buffer(uint16_t module_id, module_snapshot_buffer_t *snapshot_buffers) {
-    module_snapshot_buffer_t *iter = snapshot_buffers;
+module_snapshot_buffer* get_snapshot_buffer(uint16_t module_id, module_snapshot_buffer *snapshot_buffers) {
+    module_snapshot_buffer *iter = snapshot_buffers;
     while (iter != NULL) {
         if (iter->module_id == module_id) {
             return iter;
@@ -46,8 +43,8 @@ module_snapshot_buffer_t* get_snapshot_buffer(uint16_t module_id, module_snapsho
 }
 
 /* Initialize snapshot buffers for each declared module id */
-void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer_t *snapshot_buffers) {
-    snapshot_buffers = NULL;
+void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer **snapshot_buffers) {
+    *snapshot_buffers = NULL;
 
     char fbuf[100];
     signed char cbuf;
@@ -67,14 +64,16 @@ void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer_t 
         ungetc(cbuf, module_config_fp);
         if (cbuf != '#')
         {
-            if (fscanf(module_config_fp, "%u\n", &module_id) == 1)
+            if (fscanf(module_config_fp, "%hu\n", &module_id) == 1)
             {
-                if (snapshot_buffers == NULL) {
-                    snapshot_buffers = new module_snapshot_buffer_t(module_id);
+                if (*snapshot_buffers == NULL) {
+                    hashpipe_info(__FUNCTION__, "Creating snapshot buffer for module %hu\n", module_id);
+                    *snapshot_buffers = new module_snapshot_buffer(module_id);
                 } else {
-                    module_snapshot_buffer_t *new_buffer = new module_snapshot_buffer_t(module_id);
-                    new_buffer->next = snapshot_buffers;
-                    snapshot_buffers = new_buffer;
+                    hashpipe_info(__FUNCTION__, "Creating snapshot buffer for module %hu\n", module_id);
+                    module_snapshot_buffer *new_buffer = new module_snapshot_buffer(module_id);
+                    new_buffer->next = *snapshot_buffers;
+                    *snapshot_buffers = new_buffer;
                 }
             }
         }
@@ -156,62 +155,6 @@ static int sprint_img_snapshot_json(char* dest, size_t size, PACKET_HEADER* head
     if (n < 0 || n >= rem) return 0; p += n;
 
     return (p - dest);
-}
-
-// =====================================================================
-// Filesystem snapshot functions (originally from net_thread.c) 
-// =====================================================================
-
-
-// Writes a single-packet pulse-height snapshot to a file.
-void WritePHSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data) {
-    char json_buffer[1024];
-
-    // Create the JSON header in memory using the unified function
-    if (sprint_ph_snapshot_json(json_buffer, sizeof(json_buffer), header) <= 0) {
-        hashpipe_error(__FUNCTION__, "Failed to sprint PH snapshot JSON for filesystem");
-        return;
-    }
-
-    // Write the PFF frame to the file
-    // move the pointer to the beginning,
-    // as we only need one pkt in the snapshot file.
-    fseek(fp, 0, SEEK_SET);
-    pff_start_json(fp);
-    fputs(json_buffer, fp); // Write the generated JSON string
-    pff_end_json(fp);
-    pff_write_image(fp, PIXELS_PER_IMAGE * 2, data);
-    fflush(fp);
-    if (ftruncate(fileno(fp), ftell(fp)) < 0) {
-        hashpipe_error(__FUNCTION__, "Failed to truncate PH snapshot file");
-    }
-    fsync(fileno(fp));
-}
-
-
-// write data into img snapshot file
-void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data) {
-    char json_buffer[4096];
-
-    // Create the JSON header in memory using the unified function
-    if (sprint_img_snapshot_json(json_buffer, sizeof(json_buffer), header) <= 0) {
-        hashpipe_error(__FUNCTION__, "Failed to sprint Img snapshot JSON for filesystem");
-        return;
-    }
-
-    // Write the PFF frame to the file
-    // move the pointer to the beginning,
-    // as we only need one pkt in the snapshot file.
-    fseek(fp, 0, SEEK_SET);
-    pff_start_json(fp);
-    fputs(json_buffer, fp); // Write the generated JSON string
-    pff_end_json(fp);
-    pff_write_image(fp, BYTES_PER_MODULE_FRAME, data);
-    fflush(fp);
-    if (ftruncate(fileno(fp), ftell(fp)) < 0) {
-        hashpipe_error(__FUNCTION__, "Failed to truncate Img snapshot file");
-    }
-    fsync(fileno(fp));
 }
 
 
@@ -418,3 +361,59 @@ void write_32x32_to_uds(DATA_PRODUCT dp, PACKET_HEADER *header, uint8_t *data) {
         hashpipe_error(__FUNCTION__, "Failed to sprint Img snapshot JSON for UDS");
     }
 }
+
+// =====================================================================
+// Filesystem snapshot functions (originally from net_thread.c) 
+// =====================================================================
+
+
+// // Writes a single-packet pulse-height snapshot to a file.
+// void WritePHSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data) {
+//     char json_buffer[1024];
+
+//     // Create the JSON header in memory using the unified function
+//     if (sprint_ph_snapshot_json(json_buffer, sizeof(json_buffer), header) <= 0) {
+//         hashpipe_error(__FUNCTION__, "Failed to sprint PH snapshot JSON for filesystem");
+//         return;
+//     }
+
+//     // Write the PFF frame to the file
+//     // move the pointer to the beginning,
+//     // as we only need one pkt in the snapshot file.
+//     fseek(fp, 0, SEEK_SET);
+//     pff_start_json(fp);
+//     fputs(json_buffer, fp); // Write the generated JSON string
+//     pff_end_json(fp);
+//     pff_write_image(fp, PIXELS_PER_IMAGE * 2, data);
+//     fflush(fp);
+//     if (ftruncate(fileno(fp), ftell(fp)) < 0) {
+//         hashpipe_error(__FUNCTION__, "Failed to truncate PH snapshot file");
+//     }
+//     fsync(fileno(fp));
+// }
+
+
+// // write data into img snapshot file
+// void WriteImgSnapshots(FILE *fp, PACKET_HEADER *header, uint8_t *data) {
+//     char json_buffer[4096];
+
+//     // Create the JSON header in memory using the unified function
+//     if (sprint_img_snapshot_json(json_buffer, sizeof(json_buffer), header) <= 0) {
+//         hashpipe_error(__FUNCTION__, "Failed to sprint Img snapshot JSON for filesystem");
+//         return;
+//     }
+
+//     // Write the PFF frame to the file
+//     // move the pointer to the beginning,
+//     // as we only need one pkt in the snapshot file.
+//     fseek(fp, 0, SEEK_SET);
+//     pff_start_json(fp);
+//     fputs(json_buffer, fp); // Write the generated JSON string
+//     pff_end_json(fp);
+//     pff_write_image(fp, BYTES_PER_MODULE_FRAME, data);
+//     fflush(fp);
+//     if (ftruncate(fileno(fp), ftell(fp)) < 0) {
+//         hashpipe_error(__FUNCTION__, "Failed to truncate Img snapshot file");
+//     }
+//     fsync(fileno(fp));
+// }

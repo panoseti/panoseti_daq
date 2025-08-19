@@ -1,8 +1,10 @@
 #ifndef _SNAPSHOT_H_
 #define _SNAPSHOT_H_
 
-#include <stdio.h>
 #include <stdint.h>
+#include <sys/time.h>
+#include "image.h"
+#include <stdio.h>
 #include "databuf.h" 
 #include "pff.h"
 
@@ -18,7 +20,7 @@ extern "C" {
 #define UDS_PATH_TEMPLATE "/tmp/hashpipe_grpc.dp_%s.sock"
 
 // get the time difference
-static uint64_t timeval_diff(struct timeval *start, struct timeval *end);
+uint64_t timeval_diff(struct timeval *start, struct timeval *end);
 
 // Structure representing a Unix Domain Socket connection.
 typedef struct uds_connection {
@@ -90,7 +92,7 @@ struct module_snapshot_buffer {
     uint16_t module_id;
     snapshot_t *snapshot_head;
     snapshot_t *snapshot_tail;
-    module_snapshot_buffer_t *next;
+    module_snapshot_buffer *next;
 
     module_snapshot_buffer(uint16_t module_id) {
         this->module_id = module_id;
@@ -127,19 +129,17 @@ struct module_snapshot_buffer {
         return NULL; // Not found
     }
 
-    void update_snapshot(PACKET_HEADER *header, uint8_t *data, struct timeval *nowTime, int snapshot_interval_ms) {
+    void update_snapshot(PACKET_HEADER *header, uint8_t *data, struct timeval *nowTime, int snapshot_interval_ms, int group_ph_frames) {
         char acq_mode = header->acq_mode;
-        int quabo_num = header.quabo_num;
+        int quabo_num = header->quabo_num;
         DATA_PRODUCT dp = acq_mode_to_dp(acq_mode, group_ph_frames);
         snapshot_t *s = this->get_snapshot(dp);
 
         // If timestamp difference exceeds snapshot interval, write snapshot to the unix-domain socket for this data product
         bool write_snapshot = false;
-        tdiff = timeval_diff(&s->last_update_time, &nowTime);
+        uint64_t tdiff = timeval_diff(&s->last_update_time, nowTime);
         if ((tdiff > snapshot_interval_ms * 1000))
         {
-            s->last_update_time.tv_sec = nowTime.tv_sec;
-            s->last_update_time.tv_usec = nowTime.tv_usec;
             write_snapshot = true;
         }
 
@@ -152,8 +152,10 @@ struct module_snapshot_buffer {
             if (write_snapshot) {
                 write_16x16_to_uds(dp, header, s->data);
                 // memset(s->headers, 0, sizeof(s->headers));
-                memset(s->data, 0, sizeof(s->data));
+                s->last_update_time.tv_sec = nowTime->tv_sec;
+                s->last_update_time.tv_usec = nowTime->tv_usec;
             }
+            memset(s->data, 0, sizeof(s->data));
         } else {
             // Require 4 quabo images 
             s->quabo_bitmap |= 1 << quabo_num;
@@ -170,6 +172,8 @@ struct module_snapshot_buffer {
             if (s->quabo_bitmap == 0xf) {
                 if (write_snapshot) {
                     write_16x16_to_uds(dp, s->headers, s->data);
+                    s->last_update_time.tv_sec = nowTime->tv_sec;
+                    s->last_update_time.tv_usec = nowTime->tv_usec;
                 }
                 memset(s->headers, 0, sizeof(s->headers));
                 memset(s->data, 0, sizeof(s->data));
@@ -186,11 +190,12 @@ struct module_snapshot_buffer {
             current = next;
         }
     }
- } module_snapshot_buffer_t;
+ };
 
 
-void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer_t *snapshot_buffers);
+void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer **snapshot_buffers);
 
+module_snapshot_buffer* get_snapshot_buffer(uint16_t module_id, module_snapshot_buffer *snapshot_buffers);
 
 
 #ifdef __cplusplus

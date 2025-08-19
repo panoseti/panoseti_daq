@@ -30,6 +30,23 @@ DATA_PRODUCT str_to_dp(const char* s) {
     return DP_NONE;
 }
 
+DATA_PRODUCT acq_mode_to_dp(char acq_mode, int group_ph_frames) {
+    switch (acq_mode) {
+        case 0x01:
+            if (group_ph_frames) {
+                return DP_PH_1024_IMG; // 1024 pulse height
+            }
+            else {
+                return DP_PH_256_IMG; // 256 pulse height
+            }
+        case 0x02: return DP_BIT16_IMG;  // 16 bit imaging
+        case 0x03: return DP_BIT16_IMG;  // 16 bit imaging
+        case 0x06: return DP_BIT8_IMG;   // 8 bit imaging
+        case 0x07: return DP_BIT8_IMG;   // 8 bit imaging
+        default: return DP_NONE;
+    }
+}
+
 void pff_start_json(FILE* f) {
 }
 
