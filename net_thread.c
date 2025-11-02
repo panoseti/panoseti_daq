@@ -227,7 +227,6 @@ static void *run(hashpipe_thread_args_t *args)
     // Get info from status buffer if present (no change if not present)
     hgeti4(st.buf, "BINDPORT", &bindport);
     hputs(st.buf, status_key, "running");
-    hgets(st.buf, "SSDIR", 64, ssdir);
     hgeti4(st.buf, "SSINT", &ssint);
     hashpipe_status_unlock_safe(&st);
 
