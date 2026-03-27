@@ -50,8 +50,10 @@ COPY "${TEST_DIR}/databuf-TEST.h" databuf.h
 RUN make && make install
 
 # Build and run unit tests (fail the Docker build if any test fails)
+# 'make clean' is required because COPY above may bring in a locally-compiled
+# macOS binary; we must recompile for the Linux container architecture.
 WORKDIR /build/panoseti_daq/tests/unit
-RUN make && ./panoseti_unit_tests --reporter compact
+RUN make clean && make && ./panoseti_unit_tests --reporter compact
 
 # ==========================================
 # Stage 2: Final Runtime and Test Environment
