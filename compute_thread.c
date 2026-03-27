@@ -16,7 +16,6 @@
 #include "databuf.h"
 #include "compute_thread.h"
 #include "image.h"
-#include "process_frame.h"
 
 // Number of DAQ modes
 //
@@ -58,6 +57,8 @@ void write_from_first_module_image_buffer(
     {
         fprintf(stdout, "Wrote partial module image:\n");
         fprintf(stdout, "%s\n\n", (mod_data->mod_head.toString()).c_str());
+        // hashpipe_warn("compute_thread", "Flushing partial module image (bitmap=0x%x): %s",
+        //               mod_data->quabos_bitmap, (mod_data->mod_head.toString()).c_str());
         mod_data_buf->partial_module_image_write = true;
     }
     do
@@ -108,6 +109,8 @@ void write_from_first_ph1024_buffer(
     {
         fprintf(stdout, "Wrote partial PH1024 image:\n");
         fprintf(stdout, "%s\n\n", (ph_data->ph_head.toString()).c_str());
+        // hashpipe_warn("compute_thread", "Flushing partial PH1024 image (bitmap=0x%x): %s",
+        //               ph_data->quabos_bitmap, (ph_data->ph_head.toString()).c_str());
         ph_data_buf->partial_PH1024_image_write = true;
     }
     do
@@ -167,10 +170,9 @@ void storeData(
     }
     else
     {
-        fprintf(stderr, "Unknown acqmode %X\n ", pkt_head->acq_mode);
-        fprintf(stderr, "moduleNum=%X quaboNum=%X PKTNUM=%X\n",
-                pkt_head->mod_num, quabo_num, pkt_head->pkt_num);
-        fprintf(stderr, "packet skipped\n");
+        hashpipe_warn("compute_thread",
+            "Unknown acq_mode 0x%X (module=%u quabo=%u pkt_num=%u) — packet skipped",
+            (unsigned)pkt_head->acq_mode, pkt_head->mod_num, quabo_num, pkt_head->pkt_num);
         return;
     }
 
@@ -503,6 +505,10 @@ typedef struct quabo_info
 quabo_info_t *quabo_info_t_new()
 {
     quabo_info_t *value = (quabo_info_t *)malloc(sizeof(struct quabo_info));
+    if (!value) {
+        hashpipe_error("compute_thread", "malloc failed for quabo_info_t");
+        return NULL;
+    }
     memset(value->lost_pkts, -1, sizeof(value->lost_pkts));
     memset(value->prev_pkt_num, 0, sizeof(value->prev_pkt_num));
     return value;
@@ -516,6 +522,11 @@ static CIRCULAR_MODULE_IMAGE_BUFFER *moduleInd[MAX_MODULE_INDEX] = {NULL};
 //
 static CIRCULAR_PH_IMAGE_BUFFER *PHmoduleInd[MAX_MODULE_INDEX] = {NULL};
 
+// per-quabo packet-loss tracking, indexed by BOARDLOC (module*4 + quabo_num).
+// Declared at file scope (not on the stack) to avoid a ~512 KB stack allocation.
+//
+static quabo_info_t *quaboInd[MAX_MODULE_INDEX] = {NULL};
+
 // Initialization function
 // is called once when the thread is created
 //
@@ -523,7 +534,7 @@ static int init(hashpipe_thread_args_t *args)
 {
     hashpipe_status_t st = args->st;
     // Initialize the INTSIG signal within the buffer to be zero
-    printf("\n\n-----------Start Setup of Compute Thread--------------\n");
+    hashpipe_info("compute_thread", "Starting setup of compute thread");
     HSD_output_databuf_t *db_out = (HSD_output_databuf_t *)args->obuf;
     for (int i = 0; i < db_out->header.n_block; i++)
     {
@@ -541,18 +552,12 @@ static int init(hashpipe_thread_args_t *args)
     hgeti4(st.buf, "GROUPPHFRAMES", &group_ph_frames);
     hashpipe_status_unlock_safe(&st);
 
-    printf("Config Location: %s\n", config_location);
+    hashpipe_info("compute_thread", "Config location: %s", config_location);
     FILE *modConfig_file = fopen(config_location, "r");
 
     // Fetch user input for whether to PH frames are to be grouped.
-    if (group_ph_frames)
-    {
-        printf("Group frames is %i (True). Hashpipe will group incoming PH frames.\n", group_ph_frames);
-    }
-    else
-    {
-        printf("Group frames is %i (False). Hashpipe will not group incoming PH frames.\n", group_ph_frames);
-    }
+    hashpipe_info("compute_thread", "GROUPPHFRAMES=%d (%s PH frame grouping)",
+                  group_ph_frames, group_ph_frames ? "enabled" : "disabled");
 
     char fbuf[100];
     signed char cbuf;
@@ -560,8 +565,9 @@ static int init(hashpipe_thread_args_t *args)
 
     if (modConfig_file == NULL)
     {
-        perror("Error Opening Config File");
-        exit(1);
+        hashpipe_error("compute_thread", "Error opening config file %s: %s",
+                       config_location, strerror(errno));
+        return -1;
     }
     cbuf = getc(modConfig_file);
 
@@ -578,16 +584,18 @@ static int init(hashpipe_thread_args_t *args)
                 if (moduleInd[modName] == NULL)
                 {
                     moduleInd[modName] = new CIRCULAR_MODULE_IMAGE_BUFFER();
-                    fprintf(stdout, "Created Module (Image mode): %u.%u-%u\n",
-                            (unsigned int)(modName << 2) / 0x100,
-                            (modName << 2) % 0x100, ((modName << 2) % 0x100) + 3);
+                    hashpipe_info("compute_thread", "Created image buffer for module %u (IPs .%u-.%u)",
+                                  modName,
+                                  (modName << 2) % 0x100,
+                                  ((modName << 2) % 0x100) + 3);
                 }
                 if (PHmoduleInd[modName] == NULL)
                 {
                     PHmoduleInd[modName] = new CIRCULAR_PH_IMAGE_BUFFER();
-                    fprintf(stdout, "Created Module (Pulse-height): %u.%u-%u\n",
-                            (unsigned int)(modName << 2) / 0x100,
-                            (modName << 2) % 0x100, ((modName << 2) % 0x100) + 3);
+                    hashpipe_info("compute_thread", "Created PH buffer for module %u (IPs .%u-.%u)",
+                                  modName,
+                                  (modName << 2) % 0x100,
+                                  ((modName << 2) % 0x100) + 3);
                 }
             }
         }
@@ -605,7 +613,7 @@ static int init(hashpipe_thread_args_t *args)
     {
         fprintf(stderr, "Warning: Unable to close module configuration file.\n");
     }
-    printf("-----------Finished Setup of Compute Thread-----------\n\n");
+    hashpipe_info("compute_thread", "Finished setup of compute thread");
 
     return 0;
 }
@@ -616,7 +624,7 @@ static int init(hashpipe_thread_args_t *args)
 
 static void *run(hashpipe_thread_args_t *args)
 {
-    printf("\n---------------Running Compute Thread-----------------\n\n");
+    hashpipe_info("compute_thread", "Running compute thread");
     // Local aliases to shorten access to args fields
     HSD_input_databuf_t *db_in = (HSD_input_databuf_t *)args->ibuf;
     HSD_output_databuf_t *db_out = (HSD_output_databuf_t *)args->obuf;
@@ -632,9 +640,6 @@ static void *run(hashpipe_thread_args_t *args)
 
     // Variables to display pkt info
     uint8_t acq_mode;
-    // The current mode of the packet block
-    quabo_info_t *quaboInd[0xffff] = {NULL};
-    // hash table mapping quabo number to linked list ind
     quabo_info_t *currentQuabo;
     // Pointer to the quabo info that is currently being used
     uint16_t boardLoc;
@@ -712,8 +717,11 @@ static void *run(hashpipe_thread_args_t *args)
 
             if (moduleInd[moduleNum] == NULL)
             {
-                fprintf(stderr, "Detected New Module not in Config File: %u.%u\n", (unsigned int)(moduleNum << 2) / 0x100, (moduleNum << 2) % 0x100);
-                fprintf(stderr, "Packet skipping\n");
+                hashpipe_warn("compute_thread",
+                    "Received packet from module %u (IPs .%u-.%u) not in config — skipping",
+                    moduleNum,
+                    (moduleNum << 2) % 0x100,
+                    ((moduleNum << 2) % 0x100) + 3);
                 continue;
             }
 
@@ -748,9 +756,9 @@ static void *run(hashpipe_thread_args_t *args)
             if (quaboInd[boardLoc] == NULL)
             {
                 quaboInd[boardLoc] = quabo_info_t_new();
-                // Create a new quabo info object
-
-                printf("New Quabo Detected ID:%u.%u\n", (boardLoc >> 8) & 0x00ff, boardLoc & 0x00ff);
+                if (quaboInd[boardLoc] == NULL) continue; // malloc failed; skip loss tracking
+                hashpipe_info("compute_thread", "New quabo detected: boardLoc %u (module %u, quabo %u)",
+                              boardLoc, boardLoc >> 2, boardLoc & 0x3);
             }
 
             // Set the current Quabo to the one stored in memory
@@ -801,7 +809,7 @@ static void *run(hashpipe_thread_args_t *args)
         // Break out when SIGINT is found
         if (INTSIG)
         {
-            printf("COMPUTE_THREAD Ended\n");
+            hashpipe_info("compute_thread", "SIGINT received, stopping");
             break;
         }
 
@@ -829,7 +837,7 @@ static void *run(hashpipe_thread_args_t *args)
         pthread_testcancel();
     }
 
-    printf("Returned Compute_thread\n");
+    hashpipe_info("compute_thread", "Thread exiting");
     return THREAD_OK;
 }
 

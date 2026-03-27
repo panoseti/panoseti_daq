@@ -13,7 +13,6 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/types.h>
-#include <unistd.h>
 #include <errno.h>
 
 #include "hashpipe.h"
@@ -166,7 +165,7 @@ static inline void get_header(
 // Signal interrupt function where it is changed when a SIGINT is received by the program.
 // This value is meant to be passed to the other threads to stop the program gracefully.
 
-static int INTSIG;
+static volatile sig_atomic_t INTSIG;
 void INThandler(int signum)
 {
     INTSIG = 1;
@@ -192,7 +191,7 @@ static void *run(hashpipe_thread_args_t *args)
     signal(SIGPIPE, SIGPIPEhandler);
     INTSIG = 0;
 
-    printf("\n---------------Running Input Thread-----------------\n\n");
+    hashpipe_info("net_thread", "Running input thread");
 
     // Create pointers hashpipe args
     HSD_input_databuf_t *db = (HSD_input_databuf_t *)args->obuf;
@@ -296,7 +295,11 @@ static void *run(hashpipe_thread_args_t *args)
             if (INTSIG)
                 break;
 
-            // Recv all of the UDP packets from PKTSOCK
+            // Recv all of the UDP packets from PKTSOCK.
+            // Loop until a valid frame is received, threads stop, or SIGINT fires.
+            // Using `(!p_frame || !check_acqmode(p_frame))` ensures that frames with
+            // an invalid acq_mode are released inside check_acqmode and we retry,
+            // rather than escaping the loop with an already-released frame pointer.
             do
             {
                 p_frame = hashpipe_pktsock_recv_udp_frame_nonblock(p_ps, bindport);
@@ -370,7 +373,7 @@ static void *run(hashpipe_thread_args_t *args)
             // ==== Update HASHPIPE status buffer for PH events ====
             // The HASHPIPE status buffer is only updated every ssint ms
             // check if the mode is PH mode - mode is 0x01 or 0x03
-            if (blockHeader->pkt_head[i].acq_mode & 0x01 == 0x01)
+            if ((blockHeader->pkt_head[i].acq_mode & 0x01) == 0x01)
                 nphevents++;
             if (timeval_diff(&lastPHTime, &nowTime) > ssint * 1000)
             {
@@ -415,19 +418,15 @@ static void *run(hashpipe_thread_args_t *args)
         // Break out when SIGINT is found
         if (INTSIG)
         {
-            printf("NET_THREAD Ended\n");
+            hashpipe_info("net_thread", "SIGINT received, stopping");
             break;
         }
     }
 
-    // close the snapshot files
-    // fclose(mov16_fp);
-    // fclose(ph_fp);
-
     pthread_cleanup_pop(1); // Closes push(hashpipe_pktsock_close)
     pthread_cleanup_pop(1); // Closes push(free)
 
-    printf("Returned Net_thread\n");
+    hashpipe_info("net_thread", "Thread exiting");
     return THREAD_OK;
 }
 

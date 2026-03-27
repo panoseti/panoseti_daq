@@ -40,6 +40,7 @@ struct FILE_PTRS
     FILENAME_INFO file_info;
     int image_seqno, ph_seqno;
     FILE *bit16Img, *bit8Img, *PH256Img, *PH1024Img;
+    bool ok; // false if any file could not be opened
     FILE_PTRS(const char *diskDir, FILENAME_INFO *fi);
     void make_files(const char *diskDir);
     void new_dp_file(DATA_PRODUCT dp, const char *diskDir);
@@ -53,6 +54,7 @@ FILE_PTRS::FILE_PTRS(const char *diskDir, FILENAME_INFO *fi)
 {
     image_seqno = 0;
     ph_seqno = 0;
+    ok = true;
     file_info = *fi;
     make_files(diskDir);
 }
@@ -73,13 +75,14 @@ void FILE_PTRS::make_files(const char *run_dir)
     char buf[256];
     string filename;
 
-    sprintf(buf, "module_%d", file_info.module);
+    snprintf(buf, sizeof(buf), "module_%d", file_info.module);
     if (!path_exists(buf))
     {
         if (mkdir(buf, 0777))
         {
-            printf("Can't mkdir %s\n", buf);
-            exit(0);
+            hashpipe_error("output_thread", "Can't mkdir %s: %s", buf, strerror(errno));
+            ok = false;
+            return;
         }
     }
     file_info.seqno = 0;
@@ -88,13 +91,14 @@ void FILE_PTRS::make_files(const char *run_dir)
         file_info.data_product = (DATA_PRODUCT)dp;
         file_info.bytes_per_pixel = bytes_per_pixel((DATA_PRODUCT)dp);
         file_info.make_filename(filename);
-        sprintf(buf, "module_%d/%s/%s",
+        snprintf(buf, sizeof(buf), "module_%d/%s/%s",
                 file_info.module, run_dir, filename.c_str());
         FILE *f = fopen(buf, "w");
         if (!f)
         {
-            printf("Error: can't open file %s\n", buf);
-            exit(0);
+            hashpipe_error("output_thread", "Can't open file %s: %s", buf, strerror(errno));
+            ok = false;
+            return;
         }
         switch (dp)
         {
@@ -116,7 +120,7 @@ void FILE_PTRS::make_files(const char *run_dir)
         default:
             break;
         }
-        printf("Created file %s\n", buf);
+        hashpipe_info("output_thread", "Created file %s", buf);
     }
 }
 
@@ -135,13 +139,14 @@ void FILE_PTRS::new_dp_file(DATA_PRODUCT dp, const char *run_dir)
     file_info.start_time = time(NULL);
     file_info.bytes_per_pixel = bytes_per_pixel(dp);
     file_info.make_filename(filename);
-    sprintf(buf, "module_%d/%s/%s",
+    snprintf(buf, sizeof(buf), "module_%d/%s/%s",
             file_info.module, run_dir, filename.c_str());
     FILE *f = fopen(buf, "w");
     if (!f)
     {
-        printf("Error: can't open file %s\n", buf);
-        exit(0);
+        hashpipe_error("output_thread", "Can't open rotated file %s: %s", buf, strerror(errno));
+        ok = false;
+        return;
     }
     switch (dp)
     {
@@ -167,7 +172,7 @@ void FILE_PTRS::new_dp_file(DATA_PRODUCT dp, const char *run_dir)
     default:
         break;
     }
-    printf("new_dp_file(): created file %s\n", buf);
+    hashpipe_info("output_thread", "Rotated to new file: %s", buf);
 }
 
 static char config_location[STR_BUFFER_SIZE];
@@ -187,7 +192,12 @@ FILE_PTRS *data_file_init(const char *diskDir, int module)
     time_t t = time(NULL);
 
     FILENAME_INFO fi(t, DP_NONE, 0, module, 0);
-    return new FILE_PTRS(diskDir, &fi);
+    FILE_PTRS *fp = new FILE_PTRS(diskDir, &fi);
+    if (!fp->ok) {
+        delete fp;
+        return NULL;
+    }
+    return fp;
 }
 
 // Write image header as JSON
@@ -199,14 +209,15 @@ int write_img_header_json(
     fprintf(f, "{\n");
     for (int i = 0; i < QUABO_PER_MODULE; i++)
     {
-        if (dataHeader->img_mod_head[frameIndex].pkt_head[i].pkt_nsec > 999999999)
-            dataHeader->img_mod_head[frameIndex].pkt_head[i].pkt_nsec = 999999999;
+        // Use a local copy to avoid mutating the shared output buffer.
+        uint32_t pkt_nsec = dataHeader->img_mod_head[frameIndex].pkt_head[i].pkt_nsec;
+        if (pkt_nsec > 999999999) pkt_nsec = 999999999;
         fprintf(f,
                 "   \"quabo_%1u\": { \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
                 i,
                 dataHeader->img_mod_head[frameIndex].pkt_head[i].pkt_num,
                 dataHeader->img_mod_head[frameIndex].pkt_head[i].pkt_tai,
-                dataHeader->img_mod_head[frameIndex].pkt_head[i].pkt_nsec,
+                pkt_nsec,
                 dataHeader->img_mod_head[frameIndex].pkt_head[i].tv_sec,
                 dataHeader->img_mod_head[frameIndex].pkt_head[i].tv_usec);
         if (i < QUABO_PER_MODULE - 1)
@@ -228,6 +239,13 @@ int write_module_img_file(HSD_output_block_t *dataBlock, int frameIndex)
     int bits_per_pixel = dataBlock->header.img_mod_head[frameIndex].bits_per_pixel;
     int modSizeMultiplier = bits_per_pixel / 8;
 
+    if (moduleToWrite == NULL)
+    {
+        hashpipe_warn("output_thread", "write_module_img_file: no FILE_PTRS for module %u",
+                      dataBlock->header.img_mod_head[frameIndex].mod_num);
+        return 0;
+    }
+
     if (bits_per_pixel == 16)
     {
         f = moduleToWrite->bit16Img;
@@ -238,19 +256,16 @@ int write_module_img_file(HSD_output_block_t *dataBlock, int frameIndex)
     }
     else
     {
-        printf("BPP %i not recognized\n", bits_per_pixel);
-        printf("Module Header Value\n%s\n", dataBlock->header.img_mod_head[frameIndex].toString().c_str());
+        hashpipe_warn("output_thread", "Unrecognized BPP %d: %s",
+                      bits_per_pixel,
+                      dataBlock->header.img_mod_head[frameIndex].toString().c_str());
         return 0;
     }
 
-    if (moduleToWrite == NULL)
+    if (f == NULL)
     {
-        printf("Module To Write is null\n");
-        return 0;
-    }
-    else if (f == NULL)
-    {
-        printf("File to Write is null\n");
+        hashpipe_warn("output_thread", "write_module_img_file: file handle is NULL for module %u",
+                      dataBlock->header.img_mod_head[frameIndex].mod_num);
         return 0;
     }
 
@@ -296,14 +311,14 @@ int write_ph_header_json(
         fprintf(f, "{\n");
         for (int i = 0; i < QUABO_PER_MODULE; i++)
         {
-            if (dataHeader->ph_img_head[frameIndex].pkt_head[i].pkt_nsec > 999999999)
-                dataHeader->ph_img_head[frameIndex].pkt_head[i].pkt_nsec = 999999999;
+            uint32_t pkt_nsec = dataHeader->ph_img_head[frameIndex].pkt_head[i].pkt_nsec;
+            if (pkt_nsec > 999999999) pkt_nsec = 999999999;
             fprintf(f,
                     "   \"quabo_%1u\": { \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
                     i,
                     dataHeader->ph_img_head[frameIndex].pkt_head[i].pkt_num,
                     dataHeader->ph_img_head[frameIndex].pkt_head[i].pkt_tai,
-                    dataHeader->ph_img_head[frameIndex].pkt_head[i].pkt_nsec,
+                    pkt_nsec,
                     dataHeader->ph_img_head[frameIndex].pkt_head[i].tv_sec,
                     dataHeader->ph_img_head[frameIndex].pkt_head[i].tv_usec);
             if (i < QUABO_PER_MODULE - 1)
@@ -316,14 +331,14 @@ int write_ph_header_json(
     }
     else
     {
-        if (dataHeader->ph_img_head[frameIndex].pkt_head[0].pkt_nsec > 999999999)
-            dataHeader->ph_img_head[frameIndex].pkt_head[0].pkt_nsec = 999999999;
+        uint32_t pkt_nsec = dataHeader->ph_img_head[frameIndex].pkt_head[0].pkt_nsec;
+        if (pkt_nsec > 999999999) pkt_nsec = 999999999;
         fprintf(f,
                 "{ \"quabo_num\": %1u, \"pkt_num\": %10u, \"pkt_tai\": %4u, \"pkt_nsec\": %9u, \"tv_sec\": %10li, \"tv_usec\": %6li}",
                 dataHeader->ph_img_head[frameIndex].pkt_head[0].quabo_num,
                 dataHeader->ph_img_head[frameIndex].pkt_head[0].pkt_num,
                 dataHeader->ph_img_head[frameIndex].pkt_head[0].pkt_tai,
-                dataHeader->ph_img_head[frameIndex].pkt_head[0].pkt_nsec,
+                pkt_nsec,
                 dataHeader->ph_img_head[frameIndex].pkt_head[0].tv_sec,
                 dataHeader->ph_img_head[frameIndex].pkt_head[0].tv_usec);
     }
@@ -344,6 +359,13 @@ int write_module_ph_file(HSD_output_block_t *dataBlock, int frameIndex)
     int group_ph_frames = dataBlock->header.ph_img_head[frameIndex].group_ph_frames;
     int num_ph_frames_to_write;
 
+    if (moduleToWrite == NULL)
+    {
+        hashpipe_warn("output_thread", "write_module_ph_file: no FILE_PTRS for module %u",
+                      dataBlock->header.ph_img_head[frameIndex].mod_num);
+        return 0;
+    }
+
     if (group_ph_frames)
     {
         f = moduleToWrite->PH1024Img;
@@ -355,14 +377,10 @@ int write_module_ph_file(HSD_output_block_t *dataBlock, int frameIndex)
         num_ph_frames_to_write = 1;
     }
 
-    if (moduleToWrite == NULL)
+    if (f == NULL)
     {
-        printf("Module To Write is null\n");
-        return 0;
-    }
-    else if (f == NULL)
-    {
-        printf("File to Write is null\n");
+        hashpipe_warn("output_thread", "write_module_ph_file: file handle is NULL for module %u",
+                      dataBlock->header.ph_img_head[frameIndex].mod_num);
         return 0;
     }
 
@@ -404,8 +422,9 @@ int create_data_files_from_config()
 
     if (configFile == NULL)
     {
-        perror("Error Opening Config File");
-        exit(1);
+        hashpipe_error("output_thread", "Error opening config file %s: %s",
+                       config_location, strerror(errno));
+        return -1;
     }
 
     cbuf = getc(configFile);
@@ -420,7 +439,13 @@ int create_data_files_from_config()
                 if (data_files[modNum] == NULL)
                 {
                     data_files[modNum] = data_file_init(run_directory, modNum);
-                    printf("Created Data file for Module %u\n", modNum);
+                    if (data_files[modNum] == NULL)
+                    {
+                        hashpipe_error("output_thread", "Failed to init data files for module %u", modNum);
+                        fclose(configFile);
+                        return -1;
+                    }
+                    hashpipe_info("output_thread", "Created data files for module %u", modNum);
                 }
             }
         }
@@ -436,7 +461,7 @@ int create_data_files_from_config()
 
     if (fclose(configFile) == EOF)
     {
-        printf("Warning: Unable to close module configuration file.\n");
+        hashpipe_warn("output_thread", "Unable to close module configuration file");
     }
     return 0;
 }
@@ -485,7 +510,7 @@ DIR_STATUS check_directory(char *run_directory)
 // Signal handler to allow for hashpipe to exit gracfully
 // and to allow for creating of new files by command.
 //
-static int QUITSIG;
+static volatile sig_atomic_t QUITSIG;
 
 void QUIThandler(int signum)
 {
@@ -496,7 +521,7 @@ static int init(hashpipe_thread_args_t *args)
 {
     // Get info from status buffer if present
     hashpipe_status_t st = args->st;
-    printf("\n\n-----------Start Setup of Output Thread--------------\n");
+    hashpipe_info("output_thread", "Starting output thread setup");
 
     // Fetch user input for save location of data files.
     hgets(st.buf, "RUNDIR", STR_BUFFER_SIZE, run_directory);
@@ -509,17 +534,17 @@ static int init(hashpipe_thread_args_t *args)
     switch (check_directory(run_directory))
     {
     case DIR_EXISTS:
-        printf("Run directory: %s\n", run_directory);
+        hashpipe_info("output_thread", "Run directory: %s", run_directory);
         break;
     case DIR_DNE:
-        fprintf(stderr, "Directory %s does not exist\n", run_directory);
-        exit(1);
+        hashpipe_error("output_thread", "Directory %s does not exist", run_directory);
+        return -1;
     case NOT_DIR:
-        fprintf(stderr, "%s is not a directory\n", run_directory);
-        exit(1);
+        hashpipe_error("output_thread", "%s is not a directory", run_directory);
+        return -1;
     case DIR_READ_ERROR:
-        fprintf(stderr, "Issue reading directory %s\n", run_directory);
-        exit(1);
+        hashpipe_error("output_thread", "Issue reading directory %s", run_directory);
+        return -1;
     }
     // If directory doesn't end in a / then add it to the run_directory variable
     if (run_directory[strlen(run_directory) - 1] != '/')
@@ -529,23 +554,23 @@ static int init(hashpipe_thread_args_t *args)
     }
 
     // Fetch user input for config file location.
-    sprintf(config_location, CONFIGFILE_DEFAULT);
+    snprintf(config_location, sizeof(config_location), "%s", CONFIGFILE_DEFAULT);
     hgets(st.buf, "CONFIG", STR_BUFFER_SIZE, config_location);
-    printf("Config Location: %s\n", config_location);
+    hashpipe_info("output_thread", "Config location: %s", config_location);
 
     // Fetch user input for max file size of data files.
     int maxFileSizeInput;
     hgeti4(st.buf, "MAXFILESIZE", &maxFileSizeInput);
     max_file_size = maxFileSizeInput * 1E6;
-    printf("Max file size is %i megabytes\n", maxFileSizeInput);
-
-    printf("\n---------------SETTING UP DATA File------------------\n");
+    hashpipe_info("output_thread", "Max file size: %d MB", maxFileSizeInput);
 
     // Create data files based on given config file.
-    create_data_files_from_config();
+    if (create_data_files_from_config() != 0)
+    {
+        return -1;
+    }
 
-    printf("Use Ctrl+\\ to create a new file and Ctrl+c to close program\n");
-    printf("-----------Finished Setup of Output Thread-----------\n\n");
+    hashpipe_info("output_thread", "Output thread setup complete");
 
     return 0;
 }
@@ -556,10 +581,10 @@ void close_files()
     {
         if (data_files[i] != NULL)
         {
-            fclose(data_files[i]->bit16Img);
-            fclose(data_files[i]->bit8Img);
-            fclose(data_files[i]->PH256Img);
-            fclose(data_files[i]->PH1024Img);
+            if (data_files[i]->bit16Img)   fclose(data_files[i]->bit16Img);
+            if (data_files[i]->bit8Img)    fclose(data_files[i]->bit8Img);
+            if (data_files[i]->PH256Img)   fclose(data_files[i]->PH256Img);
+            if (data_files[i]->PH1024Img)  fclose(data_files[i]->PH1024Img);
         }
     }
 }
@@ -569,7 +594,7 @@ static void *run(hashpipe_thread_args_t *args)
     signal(SIGQUIT, QUIThandler);
     QUITSIG = 0;
 
-    printf("---------------Running Output Thread-----------------\n\n");
+    hashpipe_info("output_thread", "Running output thread");
 
     // Initialization of HASHPIPE Values
     // Local aliases to shorten access to args fields
@@ -630,14 +655,14 @@ static void *run(hashpipe_thread_args_t *args)
 
         if (QUITSIG)
         {
-            printf("Use Ctrl+\\ to create a new file and Ctrl+c to close program\n\n");
+            hashpipe_info("output_thread", "SIGQUIT received — use Ctrl+\\ to rotate files, Ctrl+C to stop");
             QUITSIG = 0;
         }
 
         if (db->block[block_idx].header.INTSIG)
         {
             close_files();
-            printf("OUTPUT_THREAD Ended\n");
+            hashpipe_info("output_thread", "INTSIG received, output thread ending");
             break;
         }
 
@@ -649,7 +674,7 @@ static void *run(hashpipe_thread_args_t *args)
         pthread_testcancel();
     }
 
-    printf("Returned Output_thread\n");
+    hashpipe_info("output_thread", "Output thread returned");
     return THREAD_OK;
 }
 
