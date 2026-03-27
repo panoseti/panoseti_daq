@@ -20,7 +20,7 @@ RUN_NAME = "obs_ci_run"
 MODULE_IDS = [1, 254]
 PCAP_FILE = "/app/test_data.pcapng"
 UDS_TEMPLATE = "/tmp/hashpipe_grpc.dp_{dp_name}.sock"
-GROUP_PH_FRAMES = 1  # Default to not grouping frames
+GROUP_PH_FRAMES = 0  # Default to not grouping frames
 
 def _ensure_dirs_and_module_config():
     cfg_str = ""
@@ -156,7 +156,8 @@ def daq_env():
     # 1) Start tcpreplay (loop indefinitely at 5 Mbps to lo)
     tcpreplay_cmd = [
         "tcpreplay",
-        "--mbps=5",
+        "-K",
+        "--mbps=1",
         "--loop=0",
         "--intf1=lo",
         PCAP_FILE,
@@ -168,7 +169,7 @@ def daq_env():
         sys.executable,
         "/app/tests/ci_tests/start_daq.py",
         "--run_dir", str(BASE_DIR),
-        "--max_file_size_mb", "5",
+        "--max_file_size_mb", "1",
         "--bindhost", "lo",
         "--group_ph_frames", str(GROUP_PH_FRAMES)
     ]
