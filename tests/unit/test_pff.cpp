@@ -1,0 +1,259 @@
+// test_pff.cpp
+// Unit tests for util/pff.h and util/pff.cpp
+// No dependency on Hashpipe.
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <string>
+
+#include "pff.h"
+
+// ─── bytes_per_pixel ────────────────────────────────────────────────────────
+
+TEST_CASE("bytes_per_pixel returns correct values for all DATA_PRODUCTs", "[pff]") {
+    CHECK(bytes_per_pixel(DP_BIT16_IMG)   == 2);
+    CHECK(bytes_per_pixel(DP_BIT8_IMG)    == 1);
+    CHECK(bytes_per_pixel(DP_PH_256_IMG)  == 2);
+    CHECK(bytes_per_pixel(DP_PH_1024_IMG) == 2);
+}
+
+TEST_CASE("bytes_per_pixel returns -1 for DP_NONE (invalid)", "[pff]") {
+    int result = bytes_per_pixel(DP_NONE);
+    CHECK(result == -1);
+}
+
+// ─── PFF read/write round-trip ───────────────────────────────────────────────
+
+TEST_CASE("pff write/read round-trip preserves JSON content", "[pff]") {
+    FILE *f = tmpfile();
+    REQUIRE(f != nullptr);
+
+    const char *json = "{\n   \"quabo_0\": { \"pkt_num\":        100 }\n}";
+
+    pff_start_json(f);
+    fprintf(f, "%s", json);
+    pff_end_json(f);
+
+    rewind(f);
+
+    std::string s;
+    int ret = pff_read_json(f, s);
+    CHECK(ret == 0);
+    CHECK(s.find("quabo_0") != std::string::npos);
+    CHECK(s.find("100") != std::string::npos);
+
+    fclose(f);
+}
+
+TEST_CASE("pff write/read round-trip preserves binary image data", "[pff]") {
+    FILE *f = tmpfile();
+    REQUIRE(f != nullptr);
+
+    const int NBYTES = 512;
+    uint8_t src[NBYTES], dst[NBYTES];
+    for (int i = 0; i < NBYTES; i++) src[i] = (uint8_t)(i & 0xff);
+
+    pff_write_image(f, NBYTES, src);
+
+    rewind(f);
+
+    int ret = pff_read_image(f, NBYTES, dst);
+    CHECK(ret == 0);
+    CHECK(memcmp(src, dst, NBYTES) == 0);
+
+    fclose(f);
+}
+
+TEST_CASE("pff header followed by image round-trips correctly", "[pff]") {
+    FILE *f = tmpfile();
+    REQUIRE(f != nullptr);
+
+    // Write a header block then an image block
+    pff_start_json(f);
+    fprintf(f, "{ \"frame\": 42 }");
+    pff_end_json(f);
+
+    const int NBYTES = 256;
+    uint8_t src[NBYTES], dst[NBYTES];
+    for (int i = 0; i < NBYTES; i++) src[i] = (uint8_t)(i ^ 0xAB);
+    pff_write_image(f, NBYTES, src);
+
+    rewind(f);
+
+    std::string json;
+    int ret = pff_read_json(f, json);
+    CHECK(ret == 0);
+    CHECK(json.find("42") != std::string::npos);
+
+    ret = pff_read_image(f, NBYTES, dst);
+    CHECK(ret == 0);
+    CHECK(memcmp(src, dst, NBYTES) == 0);
+
+    fclose(f);
+}
+
+TEST_CASE("pff_read_json returns error on empty file", "[pff]") {
+    FILE *f = tmpfile();
+    REQUIRE(f != nullptr);
+    std::string s;
+    int ret = pff_read_json(f, s);
+    CHECK(ret == PFF_ERROR_READ);
+    fclose(f);
+}
+
+// ─── FILENAME_INFO make/parse round-trip ────────────────────────────────────
+
+TEST_CASE("FILENAME_INFO make_filename / parse_filename round-trip", "[pff]") {
+    FILENAME_INFO fi;
+    fi.start_time = 1700000000.0;
+    fi.data_product = DP_BIT16_IMG;
+    fi.bytes_per_pixel = 2;
+    fi.module = 42;
+    fi.seqno = 7;
+
+    std::string name;
+    fi.make_filename(name);
+
+    // The filename must end in .pff
+    REQUIRE(ends_with(name.c_str(), ".pff"));
+
+    // Parse it back
+    char buf[512];
+    strncpy(buf, name.c_str(), sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    FILENAME_INFO fi2;
+    fi2.parse_filename(buf);
+
+    CHECK(fi2.data_product    == DP_BIT16_IMG);
+    CHECK(fi2.bytes_per_pixel == 2);
+    CHECK(fi2.module          == 42);
+    CHECK(fi2.seqno           == 7);
+}
+
+TEST_CASE("dp_to_str returns expected strings", "[pff]") {
+    CHECK(std::string(dp_to_str(DP_BIT16_IMG))   == "img16");
+    CHECK(std::string(dp_to_str(DP_BIT8_IMG))    == "img8");
+    CHECK(std::string(dp_to_str(DP_PH_256_IMG))  == "ph256");
+    CHECK(std::string(dp_to_str(DP_PH_1024_IMG)) == "ph1024");
+}
+
+// ─── acq_mode_to_dp ──────────────────────────────────────────────────────────
+
+TEST_CASE("acq_mode_to_dp maps all known acquisition modes correctly", "[pff]") {
+    // PH modes (acq_mode 0x01)
+    CHECK(acq_mode_to_dp(0x01, 0) == DP_PH_256_IMG);   // no grouping
+    CHECK(acq_mode_to_dp(0x01, 1) == DP_PH_1024_IMG);  // grouping enabled
+
+    // 16-bit imaging modes
+    CHECK(acq_mode_to_dp(0x02, 0) == DP_BIT16_IMG);
+    CHECK(acq_mode_to_dp(0x03, 0) == DP_BIT16_IMG);
+
+    // 8-bit imaging modes
+    CHECK(acq_mode_to_dp(0x06, 0) == DP_BIT8_IMG);
+    CHECK(acq_mode_to_dp(0x07, 0) == DP_BIT8_IMG);
+
+    // Unknown mode
+    CHECK(acq_mode_to_dp(0x00, 0) == DP_NONE);
+    CHECK(acq_mode_to_dp(0xFF, 0) == DP_NONE);
+}
+
+// ─── is_pff_file ─────────────────────────────────────────────────────────────
+
+TEST_CASE("is_pff_file returns true only for .pff files", "[pff]") {
+    CHECK(is_pff_file("foo.pff")               == true);
+    CHECK(is_pff_file(".pff")                  == true);
+    CHECK(is_pff_file("path/to/data.pff")      == true);
+    CHECK(is_pff_file("foo.h5")                == false);
+    CHECK(is_pff_file("foo.pffx")              == false);
+    CHECK(is_pff_file("foo.pff.gz")            == false);
+    CHECK(is_pff_file("pff")                   == false);
+    CHECK(is_pff_file("")                      == false);
+}
+
+// ─── PFF error cases ─────────────────────────────────────────────────────────
+
+TEST_CASE("pff_read_json returns PFF_ERROR_BAD_TYPE for image-start marker", "[pff]") {
+    FILE *f = tmpfile();
+    REQUIRE(f != nullptr);
+
+    // Write an image block marker where a JSON block is expected
+    const char marker = PFF_IMAGE_START;
+    fwrite(&marker, 1, 1, f);
+    rewind(f);
+
+    std::string s;
+    int ret = pff_read_json(f, s);
+    CHECK(ret == PFF_ERROR_BAD_TYPE);
+
+    fclose(f);
+}
+
+TEST_CASE("pff_read_image returns PFF_ERROR_BAD_TYPE for JSON-start marker", "[pff]") {
+    FILE *f = tmpfile();
+    REQUIRE(f != nullptr);
+
+    // Write a JSON block marker where an image block is expected
+    const char marker = PFF_JSON_START;
+    fwrite(&marker, 1, 1, f);
+    rewind(f);
+
+    uint8_t dst[512] = {};
+    int ret = pff_read_image(f, 512, dst);
+    CHECK(ret == PFF_ERROR_BAD_TYPE);
+
+    fclose(f);
+}
+
+TEST_CASE("pff_read_image returns PFF_ERROR_READ on truncated image data", "[pff]") {
+    FILE *f = tmpfile();
+    REQUIRE(f != nullptr);
+
+    // Write image start but only 4 bytes of data (< requested 512)
+    const char marker = PFF_IMAGE_START;
+    fwrite(&marker, 1, 1, f);
+    const uint8_t short_data[4] = {1, 2, 3, 4};
+    fwrite(short_data, 1, 4, f);
+    rewind(f);
+
+    uint8_t dst[512] = {};
+    int ret = pff_read_image(f, 512, dst);
+    CHECK(ret == PFF_ERROR_READ);
+
+    fclose(f);
+}
+
+// ─── FILENAME_INFO round-trips for all data products ─────────────────────────
+
+TEST_CASE("FILENAME_INFO round-trips all DATA_PRODUCT values", "[pff]") {
+    DATA_PRODUCT dps[] = {DP_BIT16_IMG, DP_BIT8_IMG, DP_PH_256_IMG, DP_PH_1024_IMG};
+    int bpps[]         = {2, 1, 2, 2};
+
+    for (int k = 0; k < 4; k++) {
+        FILENAME_INFO fi;
+        fi.start_time = 1700000000.0;
+        fi.data_product = dps[k];
+        fi.bytes_per_pixel = bpps[k];
+        fi.module = 7;
+        fi.seqno = k;
+
+        std::string name;
+        fi.make_filename(name);
+        REQUIRE(ends_with(name.c_str(), ".pff"));
+
+        char buf[512];
+        strncpy(buf, name.c_str(), sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+
+        FILENAME_INFO fi2;
+        fi2.parse_filename(buf);
+
+        CHECK(fi2.data_product    == dps[k]);
+        CHECK(fi2.bytes_per_pixel == bpps[k]);
+        CHECK(fi2.module          == 7);
+        CHECK(fi2.seqno           == k);
+    }
+}
