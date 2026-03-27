@@ -18,7 +18,9 @@ RUN apt-get update && \
     python3-venv \
     python3-dev \
     g++ \
-    make && \
+    make \
+    catch2 \
+    pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
 
@@ -57,6 +59,13 @@ COPY "${TEST_DIR}/databuf-TEST.h" databuf.h
 
 RUN make
 RUN make install
+
+# Build and run unit tests (fail the Docker build if any test fails)
+WORKDIR /build/panoseti_daq/tests/unit
+RUN make
+RUN ./panoseti_unit_tests --reporter compact
+
+WORKDIR /build/panoseti_daq
 
 # Stage 2: Final Runtime and Test Environment
 # This stage creates the small final image.
