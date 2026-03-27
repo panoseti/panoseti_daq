@@ -243,13 +243,28 @@ Key status fields: `BINDHOST`, `BINDPORT`, `RUNDIR`, `NPACKETS` (total packets r
 
 ## Testing
 
-Tests are integration tests that spin up a real Hashpipe instance inside Docker, replay a captured packet trace via `tcpreplay`, and assert end-to-end behavior.
+Two test layers are provided: fast Catch2 unit tests and Docker-based integration tests.
+
+### Unit tests (no Docker required)
+
+Unit tests cover `util/pff.cpp` and `util/image.cpp` in isolation using [Catch2](https://github.com/catchorg/Catch2). They run in seconds and require no Hashpipe installation.
+
+**Requirements**: `g++` with C++17 support, `libcatch2-dev` (`apt install catch2`)
 
 ```bash
-# Run the full CI suite (requires Docker)
+cd tests/unit
+make test
+```
+
+### Integration tests
+
+Integration tests spin up a real Hashpipe instance inside Docker, replay a captured packet trace via `tcpreplay`, and assert end-to-end behavior. The unit tests also run as part of the Docker builder stage — the image will fail to build if any unit test fails.
+
+```bash
+# Build image (runs unit tests) and execute integration tests
 ./run_ci_tests.sh
 
-# Run individual test suites
+# Run individual integration test suites (requires built image)
 docker build -t panoseti-daq -f tests/ci_tests/Dockerfile .
 docker run --rm --shm-size=2g panoseti-daq \
     python3 -m pytest -s -v tests/ci_tests/test_can_hashpipe_init.py
@@ -261,8 +276,12 @@ docker run --rm --shm-size=2g panoseti-daq \
 | `test_uds_resilience.py` | UDS connections reconnect correctly after the server restarts |
 | `test_uds_data_path.py` | End-to-end: Hashpipe connects to UDS sockets and delivers correctly framed PH data |
 | `test_pff_header_consistency.py` | PFF file headers are well-formed and consistent with binary image blocks |
+| `test_packet_sequence_monotonic.py` | Per-quabo packet numbers are monotonically non-decreasing |
+| `test_module_id_correctness.py` | Module IDs in UDS frames match the configured set |
+| `test_timestamp_sanity.py` | Timestamps in headers are sane (pkt_nsec in range, pkt_tai non-zero) |
+| `test_image_data_nonzero.py` | img16 frames carry real pixel data (not all-zero or all-saturated) |
 
-The CI fixture (`conftest.py`) starts the Python test code as the **UDS server** (the role normally played by `panoseti_grpc`), replays a `.pcapng` capture at 5 Mbps on the loopback interface, and launches Hashpipe as the client — mirroring the production connection direction exactly.
+The CI fixture (`conftest.py`) starts the Python test code as the **UDS server** (the role normally played by `panoseti_grpc`), replays a `.pcapng` capture at 1 Mbps on the loopback interface, and launches Hashpipe as the client — mirroring the production connection direction exactly.
 
 CI runs on GitHub Actions (`.github/workflows/ci.yml`) on every push to `main` and `dev`.
 
@@ -276,17 +295,41 @@ CI runs on GitHub Actions (`.github/workflows/ci.yml`) on every push to `main` a
 ├── output_thread.c       # Thread 3: PFF file I/O and file rotation
 ├── databuf.h             # Shared memory buffer layout and constants
 ├── snapshot.c/h          # UDS connection management and snapshot logic
-├── process_frame.c/h     # Per-packet processing helpers
 ├── util/
 │   ├── pff.cpp/h         # PanoSETI File Format read/write
-│   └── image.cpp/h       # Quabo→module image assembly and rotation
+│   ├── image.cpp/h       # Quabo→module image assembly and rotation
+│   └── packet_utils.h    # Inline timestamp reconciliation and packet-loss math
 ├── tests/
+│   ├── unit/             # Catch2 unit tests for util/ (no Hashpipe dependency)
 │   ├── ci_tests/         # Docker-based integration tests (pytest)
 │   └── packetTestGenerator/  # Synthetic packet generator (CMake)
+├── docs/
+│   └── improvement-plan.md   # Planned robustness improvements and architecture proposals
 ├── Makefile              # x86-64 build
 ├── Makefile.aarch64      # ARM64 build
 └── run_ci_tests.sh       # Local CI runner script
 ```
+
+---
+
+## Recent Improvements
+
+A series of robustness and correctness fixes were applied to the codebase. See [`docs/improvement-plan.md`](docs/improvement-plan.md) for the complete roadmap.
+
+### Phase 0 — Critical bug fixes
+
+| Fix | File | Description |
+|-----|------|-------------|
+| Stack overflow | `compute_thread.c` | Moved 512 KB `quaboInd[]` array from stack to file-scope static |
+| NULL deref | `compute_thread.c` | Added NULL guard on `quabo_info_t_new()` return |
+| NULL deref | `output_thread.c` | Fixed NULL check ordering in `write_module_ph_file` |
+| Memory leak | `output_thread.c` | Added NULL guards before `fclose()` in `close_files()` |
+| Wrong default | `util/pff.h` | `bytes_per_pixel()` returned enum value instead of `-1` for `DP_NONE` |
+| Signal safety | `net_thread.c` | Changed `INTSIG` to `volatile sig_atomic_t` |
+| Signal safety | `output_thread.c` | Changed `QUITSIG` to `volatile sig_atomic_t` |
+| Infinite loop | `net_thread.c` | Fixed do-while condition that let bad `acq_mode` packets escape the loop |
+| Logging | All threads | Replaced all `printf`/`fprintf`/`exit` with `hashpipe_error`/`hashpipe_warn`/`hashpipe_info` |
+| Dead code | Repository | Deleted unused `process_frame.c/h` |
 
 ---
 
