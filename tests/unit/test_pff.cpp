@@ -226,6 +226,170 @@ TEST_CASE("pff_read_image returns PFF_ERROR_READ on truncated image data", "[pff
     fclose(f);
 }
 
+// ─── ends_with edge cases ─────────────────────────────────────────────────────
+
+TEST_CASE("ends_with: empty string returns false", "[pff]") {
+    CHECK(ends_with("", ".pff") == false);
+    CHECK(ends_with("", "")     == true);
+}
+
+TEST_CASE("ends_with: suffix longer than string returns false", "[pff]") {
+    CHECK(ends_with("ab", "abc") == false);
+}
+
+TEST_CASE("ends_with: suffix equals full string returns true", "[pff]") {
+    CHECK(ends_with("foo.pff", "foo.pff") == true);
+}
+
+// ─── bytes_per_pixel loop invariant ──────────────────────────────────────────
+
+TEST_CASE("bytes_per_pixel: all valid products return 1 or 2", "[pff]") {
+    DATA_PRODUCT valid[] = {DP_BIT16_IMG, DP_BIT8_IMG, DP_PH_256_IMG, DP_PH_1024_IMG};
+    for (DATA_PRODUCT dp : valid) {
+        int bpp = bytes_per_pixel(dp);
+        REQUIRE(bpp > 0);
+        REQUIRE(bpp <= 2);
+    }
+}
+
+TEST_CASE("bytes_per_pixel: DP_NONE returns -1", "[pff]") {
+    CHECK(bytes_per_pixel(DP_NONE) == -1);
+}
+
+// ─── pff_parse_path ───────────────────────────────────────────────────────────
+
+TEST_CASE("pff_parse_path extracts dir and filename correctly", "[pff]") {
+    const char* path =
+        "obs_Palomar/run_dir/start_2024-01-01T00_00_00Z.dp_img16.bpp_2.module_5.seqno_0.pff";
+    std::string dir, file;
+    int ret = pff_parse_path(path, dir, file);
+    REQUIRE(ret == 0);
+    CHECK(dir  == "run_dir");
+    CHECK(file == "start_2024-01-01T00_00_00Z.dp_img16.bpp_2.module_5.seqno_0.pff");
+}
+
+TEST_CASE("pff_parse_path returns -1 for path with no slash", "[pff]") {
+    std::string dir, file;
+    int ret = pff_parse_path("nodir.pff", dir, file);
+    CHECK(ret == -1);
+}
+
+// ─── pff_read_json skips leading newlines ────────────────────────────────────
+
+TEST_CASE("pff_read_json skips newlines before the opening brace", "[pff]") {
+    FILE *f = tmpfile();
+    REQUIRE(f != nullptr);
+
+    // Write newlines then a JSON block (pff_start_json writes nothing itself)
+    const char* prefix = "\n\n";
+    fwrite(prefix, 1, strlen(prefix), f);
+    pff_start_json(f);
+    fprintf(f, "{\"key\": 1}");
+    pff_end_json(f);
+
+    rewind(f);
+
+    std::string s;
+    int ret = pff_read_json(f, s);
+    CHECK(ret == 0);
+    CHECK(s.find("key") != std::string::npos);
+
+    fclose(f);
+}
+
+// ─── DIRNAME_INFO make/parse round-trip ──────────────────────────────────────
+
+TEST_CASE("DIRNAME_INFO round-trips observatory and run_type for all run types", "[pff]") {
+    const char* run_types[] = {"SCI", "CAL", "ENG"};
+    const char* obs = "Palomar";
+    // Use a fixed time well away from DST transitions for reproducibility
+    double t = 1700000000.0;
+
+    for (const char* rt : run_types) {
+        DIRNAME_INFO di(t, obs, rt);
+        std::string name;
+        di.make_dirname(name);
+        REQUIRE(!name.empty());
+
+        char buf[512];
+        strncpy(buf, name.c_str(), sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+
+        DIRNAME_INFO di2;
+        di2.parse_dirname(buf);
+
+        CHECK(di2.observatory == obs);
+        CHECK(di2.run_type    == rt);
+    }
+}
+
+// ─── Multiple frames sequential write/read ───────────────────────────────────
+
+TEST_CASE("pff write/read 20 alternating header+image pairs round-trips correctly", "[pff]") {
+    FILE *f = tmpfile();
+    REQUIRE(f != nullptr);
+
+    const int N = 20;
+    const int NBYTES = 64;
+    uint8_t src[N][NBYTES];
+    for (int k = 0; k < N; k++)
+        for (int b = 0; b < NBYTES; b++)
+            src[k][b] = (uint8_t)((k * 7 + b) & 0xff);
+
+    // Write all N pairs
+    for (int k = 0; k < N; k++) {
+        pff_start_json(f);
+        fprintf(f, "{\"frame\": %d}", k);
+        pff_end_json(f);
+        pff_write_image(f, NBYTES, src[k]);
+    }
+
+    rewind(f);
+
+    // Read all N pairs back
+    for (int k = 0; k < N; k++) {
+        std::string json;
+        int ret = pff_read_json(f, json);
+        REQUIRE(ret == 0);
+        // Verify frame index appears in header
+        char expected[32];
+        snprintf(expected, sizeof(expected), "%d", k);
+        REQUIRE(json.find(expected) != std::string::npos);
+
+        uint8_t dst[NBYTES] = {};
+        ret = pff_read_image(f, NBYTES, dst);
+        REQUIRE(ret == 0);
+        REQUIRE(memcmp(src[k], dst, NBYTES) == 0);
+    }
+
+    fclose(f);
+}
+
+// ─── FILENAME_INFO seqno preservation ────────────────────────────────────────
+
+TEST_CASE("FILENAME_INFO preserves large seqno (999) through round-trip", "[pff]") {
+    FILENAME_INFO fi;
+    fi.start_time = 1700000000.0;
+    fi.data_product = DP_PH_256_IMG;
+    fi.bytes_per_pixel = 2;
+    fi.module = 3;
+    fi.seqno = 999;
+
+    std::string name;
+    fi.make_filename(name);
+    REQUIRE(ends_with(name.c_str(), ".pff"));
+
+    char buf[512];
+    strncpy(buf, name.c_str(), sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    FILENAME_INFO fi2;
+    fi2.parse_filename(buf);
+    CHECK(fi2.seqno == 999);
+    CHECK(fi2.data_product == DP_PH_256_IMG);
+    CHECK(fi2.module == 3);
+}
+
 // ─── FILENAME_INFO round-trips for all data products ─────────────────────────
 
 TEST_CASE("FILENAME_INFO round-trips all DATA_PRODUCT values", "[pff]") {

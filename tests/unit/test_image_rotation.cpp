@@ -271,6 +271,137 @@ TEST_CASE("quabo16_to_quabo16_copy quabo1: pixel (i,j) lands at out[15-i][15-j]"
             REQUIRE(out[15-i][15-j] == in[i][j]);
 }
 
+// ─── quabo8_to_module8_copy — complete coverage for quabos 1 and 2 ──────────
+
+TEST_CASE("quabo8_to_module8_copy quabo1: pixel (i,j) lands at out[15-i][31-j]", "[image]") {
+    QUABO_IMG8 in;
+    MODULE_IMG8 out;
+    fill_input8(in);
+    memset(out, 0, sizeof(out));
+
+    quabo8_to_module8_copy(in, 1, out);
+
+    CHECK(out[15][31] == in[0][0]);
+    CHECK(out[0][16]  == in[15][15]);
+
+    for (int i = 0; i < QUABO_DIM; i++)
+        for (int j = 0; j < QUABO_DIM; j++)
+            REQUIRE(out[15-i][31-j] == in[i][j]);
+}
+
+TEST_CASE("quabo8_to_module8_copy quabo2: pixel (i,j) lands at out[31-j][16+i]", "[image]") {
+    QUABO_IMG8 in;
+    MODULE_IMG8 out;
+    fill_input8(in);
+    memset(out, 0, sizeof(out));
+
+    quabo8_to_module8_copy(in, 2, out);
+
+    CHECK(out[31][16] == in[0][0]);
+    CHECK(out[16][31] == in[15][15]);
+
+    for (int i = 0; i < QUABO_DIM; i++)
+        for (int j = 0; j < QUABO_DIM; j++)
+            REQUIRE(out[31-j][16+i] == in[i][j]);
+}
+
+// ─── Max-value saturation tests ───────────────────────────────────────────────
+
+TEST_CASE("quabo8_to_module8_copy preserves max pixel value 0xFF", "[image]") {
+    QUABO_IMG8 in;
+    MODULE_IMG8 out;
+    memset(in,  0xFF, sizeof(in));
+    memset(out, 0,    sizeof(out));
+
+    quabo8_to_module8_copy(in, 0, out);
+
+    // All written pixels in quabo-0's quadrant (rows 0-15, cols 0-15) must be 0xFF
+    for (int i = 0; i < QUABO_DIM; i++)
+        for (int j = 0; j < QUABO_DIM; j++)
+            REQUIRE(out[j][15-i] == 0xFF);
+}
+
+TEST_CASE("quabo16_to_module16_copy preserves max pixel value 0xFFFF", "[image]") {
+    QUABO_IMG16 in;
+    MODULE_IMG16 out;
+    memset(in,  0xFF, sizeof(in));   // sets all uint16 to 0xFFFF
+    memset(out, 0,    sizeof(out));
+
+    quabo16_to_module16_copy(in, 3, out);
+
+    for (int i = 0; i < QUABO_DIM; i++)
+        for (int j = 0; j < QUABO_DIM; j++)
+            REQUIRE(out[16+i][j] == 0xFFFF);
+}
+
+// ─── zero_then_add equals copy ────────────────────────────────────────────────
+
+TEST_CASE("zero_module_img16 + quabo16_to_module16_add equals quabo16_to_module16_copy", "[image]") {
+    QUABO_IMG16 in;
+    MODULE_IMG16 out_copy, out_add;
+    fill_input16(in);
+
+    memset(out_copy, 0, sizeof(out_copy));
+    memset(out_add,  0, sizeof(out_add));
+
+    // Reference: single copy
+    quabo16_to_module16_copy(in, 1, out_copy);
+
+    // Equivalent: zero then add once
+    zero_module_img16(out_add);
+    quabo16_to_module16_add(in, 1, out_add);
+
+    for (int r = 0; r < MODULE_DIM; r++)
+        for (int c = 0; c < MODULE_DIM; c++)
+            REQUIRE(out_add[r][c] == out_copy[r][c]);
+}
+
+// ─── add accumulates without overflow for small values ───────────────────────
+
+TEST_CASE("quabo16_to_module16_add: 10 additions of pixel=1 yields 10", "[image]") {
+    QUABO_IMG16 in;
+    MODULE_IMG16 out;
+    // Fill every pixel with 1
+    for (int i = 0; i < QUABO_DIM; i++)
+        for (int j = 0; j < QUABO_DIM; j++)
+            in[i][j] = 1;
+    memset(out, 0, sizeof(out));
+
+    for (int k = 0; k < 10; k++)
+        quabo16_to_module16_add(in, 3, out);
+
+    for (int i = 0; i < QUABO_DIM; i++)
+        for (int j = 0; j < QUABO_DIM; j++)
+            REQUIRE(out[16+i][j] == 10);
+}
+
+// ─── print functions smoke test ───────────────────────────────────────────────
+
+TEST_CASE("print_quabo_img8 and print_module_img16 do not crash", "[image]") {
+    QUABO_IMG8 q8;
+    MODULE_IMG16 m16;
+    fill_input8(q8);
+    memset(m16, 0xFF, sizeof(m16));
+
+    // Redirect stdout to /dev/null to avoid flooding test output.
+    // We only verify these functions return (no crash, no abort).
+    FILE* devnull = fopen("/dev/null", "w");
+    if (devnull) {
+        FILE* saved = stdout;
+        stdout = devnull;
+        print_quabo_img8(q8);
+        print_module_img16(m16);
+        stdout = saved;
+        fclose(devnull);
+    } else {
+        // If we can't redirect, just call them directly.
+        // Output will appear in test log but shouldn't fail.
+        print_quabo_img8(q8);
+        print_module_img16(m16);
+    }
+    SUCCEED("Print functions returned without crashing");
+}
+
 // ─── quabo16_to_module16_add ─────────────────────────────────────────────────
 
 TEST_CASE("quabo16_to_module16_add accumulates with += operator", "[image]") {
