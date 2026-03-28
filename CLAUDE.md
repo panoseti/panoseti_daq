@@ -80,7 +80,7 @@ cd tests/unit && make clean && make && ./panoseti_unit_tests --reporter compact
 # Full CI: unit tests + integration tests (requires Docker)
 ./run_ci_tests.sh
 
-# Individual integration test files (inside the daq-ssh-test container)
+# Individual integration test files (inside the daq-test container)
 pytest tests/ci_tests/test_can_hashpipe_init.py
 pytest tests/ci_tests/test_uds_resilience.py
 pytest tests/ci_tests/test_uds_data_path.py

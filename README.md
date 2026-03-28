@@ -265,7 +265,7 @@ Integration tests spin up a real Hashpipe instance inside Docker, replay a captu
 ./run_ci_tests.sh
 
 # Quick iteration: run one test file against an already-built image
-docker build -t panoseti-daq -f tests/ci_tests/Dockerfile --target daq-ssh-test .
+docker build -t panoseti-daq -f tests/ci_tests/Dockerfile --target daq-test .
 docker run --rm --shm-size=2g panoseti-daq \
     python3 -m pytest -v --tb=short tests/ci_tests/test_can_hashpipe_init.py
 ```

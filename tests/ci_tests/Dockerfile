@@ -65,12 +65,12 @@ RUN make && make install
 WORKDIR /build/panoseti_daq/tests/unit
 RUN make clean && make && ./panoseti_unit_tests --reporter compact
 
-# ─── Stage 4: daq-ssh-test ────────────────────────────────────────────────────
+# ─── Stage 4: daq-test ────────────────────────────────────────────────────
 # Minimal integration-test runtime — no build tools, only what's needed to run
 # pytest against a live Hashpipe subprocess via tcpreplay.
-FROM python:3.14-slim AS daq-ssh-test
+FROM python:3.14-slim AS daq-test
 
-LABEL stage="daq-ssh-test"
+LABEL stage="daq-test"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
