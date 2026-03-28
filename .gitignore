@@ -263,6 +263,11 @@ __marimo__/
 
 # Mac DS_Store
 *.DS_Store
+*.dSYM/
+
+# Compiled DAQ test binary and CMake build artifacts
+tests/unit/panoseti_unit_tests
+tests/packetTestGenerator/build/
 
 # cProfile
 *.prof

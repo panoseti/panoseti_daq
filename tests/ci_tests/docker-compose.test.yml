@@ -1,0 +1,24 @@
+name: panoseti-daq-ci
+
+services:
+  # Runs all integration tests in a single container session.
+  # Sharing one Hashpipe subprocess across all test files avoids the per-file
+  # startup overhead of the old serial docker-run loop.
+  test_runner:
+    build:
+      context: ../../
+      dockerfile: tests/ci_tests/Dockerfile
+      target: daq-ssh-test
+    shm_size: 2g
+    environment:
+      - PYTEST_TIMEOUT=120
+    command: >
+      python3 -m pytest -v --timeout=120
+        tests/ci_tests/test_can_hashpipe_init.py
+        tests/ci_tests/test_uds_resilience.py
+        tests/ci_tests/test_uds_data_path.py
+        tests/ci_tests/test_pff_header_consistency.py
+        tests/ci_tests/test_packet_sequence_monotonic.py
+        tests/ci_tests/test_module_id_correctness.py
+        tests/ci_tests/test_timestamp_sanity.py
+        tests/ci_tests/test_image_data_nonzero.py

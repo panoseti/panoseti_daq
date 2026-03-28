@@ -55,10 +55,8 @@ void write_from_first_module_image_buffer(
     MODULE_IMAGE_BUFFER *mod_data = mod_data_buf->buf[mod_data_buf->first];
     if (mod_data->quabos_bitmap != 0xf)
     {
-        fprintf(stdout, "Wrote partial module image:\n");
-        fprintf(stdout, "%s\n\n", (mod_data->mod_head.toString()).c_str());
-        // hashpipe_warn("compute_thread", "Flushing partial module image (bitmap=0x%x): %s",
-        //               mod_data->quabos_bitmap, (mod_data->mod_head.toString()).c_str());
+        hashpipe_warn("compute_thread", "Flushing partial module image (bitmap=0x%x): %s",
+                      mod_data->quabos_bitmap, (mod_data->mod_head.toString()).c_str());
         mod_data_buf->partial_module_image_write = true;
     }
     do
@@ -107,10 +105,8 @@ void write_from_first_ph1024_buffer(
     PH_IMAGE_BUFFER *ph_data = ph_data_buf->buf[ph_data_buf->first];
     if (ph_data->quabos_bitmap != 0xf)
     {
-        fprintf(stdout, "Wrote partial PH1024 image:\n");
-        fprintf(stdout, "%s\n\n", (ph_data->ph_head.toString()).c_str());
-        // hashpipe_warn("compute_thread", "Flushing partial PH1024 image (bitmap=0x%x): %s",
-        //               ph_data->quabos_bitmap, (ph_data->ph_head.toString()).c_str());
+        hashpipe_warn("compute_thread", "Flushing partial PH1024 image (bitmap=0x%x): %s",
+                      ph_data->quabos_bitmap, (ph_data->ph_head.toString()).c_str());
         ph_data_buf->partial_PH1024_image_write = true;
     }
     do
@@ -213,7 +209,8 @@ void storeData(
                 // the bits per pixel of the packet do not match the bits per pixel of the image in the current buffer
                 // write an error message, then continue to the next buffer.
                 //
-                fprintf(stderr, "new bits_per_pixel %d %d\n", mod_data->mod_head.bits_per_pixel, bits_per_pixel);
+                hashpipe_warn("compute_thread", "bpp mismatch: buffer=%d, packet=%d",
+                              mod_data->mod_head.bits_per_pixel, bits_per_pixel);
             }
             else if ((mod_data->quabos_bitmap & quabo_bit) == 0)
             {
@@ -319,8 +316,9 @@ void storeData(
                     }
                     else
                     {
-                        fprintf(stdout, "currind=%d, quabos_bitmap=%d\n", currind, mod_data_buf->buf[currind]->quabos_bitmap);
-                        fprintf(stdout, "strange circular module image buffer behavior. currind=%d, nextind=%d\n", currind, nextind);
+                        hashpipe_warn("compute_thread",
+                            "strange circular module image buffer: currind=%d nextind=%d bitmap=0x%x",
+                            currind, nextind, mod_data_buf->buf[currind]->quabos_bitmap);
                     }
                 }
                 if (set_last_to_nextind)
@@ -481,8 +479,9 @@ void storeData(
                 }
                 else
                 {
-                    fprintf(stdout, "currind=%d, quabos_bitmap=%d\n", currind, ph_data_buf->buf[currind]->quabos_bitmap);
-                    fprintf(stdout, "strange ph circular buffer behavior. currind=%d, nextind=%d\n", currind, nextind);
+                    hashpipe_warn("compute_thread",
+                        "strange ph circular buffer: currind=%d nextind=%d bitmap=0x%x",
+                        currind, nextind, ph_data_buf->buf[currind]->quabos_bitmap);
                 }
             }
             if (set_last_to_nextind)
@@ -543,7 +542,7 @@ static int init(hashpipe_thread_args_t *args)
 
     // Initializing the module data with the config file
     char config_location[STR_BUFFER_SIZE];
-    sprintf(config_location, CONFIGFILE_DEFAULT);
+    snprintf(config_location, sizeof(config_location), "%s", CONFIGFILE_DEFAULT);
     group_ph_frames = 0; // Default to not grouping frame
 
     // Lock shared buffer to properly get and set values.
@@ -581,6 +580,13 @@ static int init(hashpipe_thread_args_t *args)
         {
             if (fscanf(modConfig_file, "%u\n", &modName) == 1)
             {
+                if (modName >= MAX_MODULE_INDEX) {
+                    hashpipe_error("compute_thread",
+                        "Module ID %u in config exceeds max %u, skipping",
+                        modName, MAX_MODULE_INDEX - 1);
+                    cbuf = getc(modConfig_file);
+                    continue;
+                }
                 if (moduleInd[modName] == NULL)
                 {
                     moduleInd[modName] = new CIRCULAR_MODULE_IMAGE_BUFFER();
@@ -611,7 +617,7 @@ static int init(hashpipe_thread_args_t *args)
 
     if (fclose(modConfig_file) == EOF)
     {
-        fprintf(stderr, "Warning: Unable to close module configuration file.\n");
+        hashpipe_warn("compute_thread", "Unable to close config file");
     }
     hashpipe_info("compute_thread", "Finished setup of compute thread");
 
@@ -642,8 +648,9 @@ static void *run(hashpipe_thread_args_t *args)
     uint8_t acq_mode;
     quabo_info_t *currentQuabo;
     // Pointer to the quabo info that is currently being used
-    uint16_t boardLoc;
-    // The boardLoc(quabo index) for the current packet
+    uint32_t boardLoc;
+    // The boardLoc(quabo index) for the current packet (uint32_t prevents
+    // overflow when mod_num >= 16384 in the uint16_t * 4 calculation)
 
     // Counters for the packets lost
     int total_lost_pkts = 0;
@@ -749,7 +756,29 @@ static void *run(hashpipe_thread_args_t *args)
             // by using packet number
             // Read the packet number from the packet
             acq_mode = db_in->block[curblock_in].header.pkt_head[i].acq_mode;
-            boardLoc = db_in->block[curblock_in].header.pkt_head[i].mod_num * 4 + db_in->block[curblock_in].header.pkt_head[i].quabo_num;
+            boardLoc = (uint32_t)db_in->block[curblock_in].header.pkt_head[i].mod_num * 4u
+                     + (uint32_t)db_in->block[curblock_in].header.pkt_head[i].quabo_num;
+
+            // Validate boardLoc before using it as an array index.
+            // mod_num comes from an untrusted UDP packet; if >= 16384, boardLoc
+            // would exceed the quaboInd[] bounds.
+            if (boardLoc >= MAX_MODULE_INDEX) {
+                hashpipe_warn("compute_thread",
+                    "boardLoc %u out of range (module %u quabo %u), skipping loss tracking",
+                    boardLoc,
+                    db_in->block[curblock_in].header.pkt_head[i].mod_num,
+                    db_in->block[curblock_in].header.pkt_head[i].quabo_num);
+                continue;
+            }
+
+            // Validate acq_mode before using it as an index into per-mode arrays
+            // (size NUM_OF_MODES+1 = 8; valid indices 0..7).
+            if (acq_mode > NUM_OF_MODES) {
+                hashpipe_warn("compute_thread",
+                    "acq_mode %u out of bounds [0,%u], skipping loss tracking",
+                    (unsigned)acq_mode, NUM_OF_MODES);
+                continue;
+            }
 
             // Check if there is a quabo info for the current quabo packet.
             // If not create an object

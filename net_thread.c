@@ -32,7 +32,7 @@ static module_snapshot_buffer *snapshot_buffers;
 
 static int init(hashpipe_thread_args_t *args)
 {
-    printf("\n\n-----------Start Setup of Input Thread--------------\n");
+    hashpipe_info(__FUNCTION__, "Starting net thread setup");
     // define default network params
     char bindhost[80];
     int bindport = 60001;
@@ -40,7 +40,7 @@ static int init(hashpipe_thread_args_t *args)
     int ssint = 100;
 
     char module_config[STR_BUFFER_SIZE];
-    sprintf(module_config, CONFIGFILE_DEFAULT);
+    snprintf(module_config, sizeof(module_config), "%s", CONFIGFILE_DEFAULT);
     group_ph_frames = 0; // Default to not grouping frame
 
     hashpipe_status_t st = args->st;
@@ -119,7 +119,7 @@ static int init(hashpipe_thread_args_t *args)
         pthread_exit(NULL);
     }
 
-    printf("-----------Finished Setup of Input Thread------------\n\n");
+    hashpipe_info(__FUNCTION__, "Net thread setup complete");
     // Success!
     return 0;
 }
@@ -139,7 +139,7 @@ int check_acqmode(unsigned char *p_frame)
         return 1;
     }
     hashpipe_pktsock_release_frame(p_frame);
-    fprintf(stderr, "Bad acq mode in packet: %d\n", pkt_data[0]);
+    hashpipe_warn(__FUNCTION__, "Bad acq mode in packet: %d", pkt_data[0]);
     return 0;
 }
 
@@ -303,7 +303,7 @@ static void *run(hashpipe_thread_args_t *args)
             do
             {
                 p_frame = hashpipe_pktsock_recv_udp_frame_nonblock(p_ps, bindport);
-            } while (!p_frame && run_threads() && !INTSIG && !check_acqmode(p_frame));
+            } while (run_threads() && !INTSIG && (!p_frame || !check_acqmode(p_frame)));
 
             // Check to see if the threads are still running. If not then terminate
             if (!run_threads() || INTSIG)
@@ -339,7 +339,7 @@ static void *run(hashpipe_thread_args_t *args)
             }
             else
             {
-                fprintf(stderr, "gettimeofday() failed, errno = %d\n", errno);
+                hashpipe_warn(__FUNCTION__, "gettimeofday() failed: %s", strerror(errno));
                 blockHeader->pkt_head[i].tv_sec = 0;
                 blockHeader->pkt_head[i].tv_usec = 0;
             }
@@ -422,6 +422,10 @@ static void *run(hashpipe_thread_args_t *args)
             break;
         }
     }
+
+    free_uds_connections();
+    free_module_snapshot_buffers(snapshot_buffers);
+    snapshot_buffers = NULL;
 
     pthread_cleanup_pop(1); // Closes push(hashpipe_pktsock_close)
     pthread_cleanup_pop(1); // Closes push(free)

@@ -53,8 +53,8 @@ void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer **
 
     if (module_config_fp == NULL)
     {
-        perror("Error Opening Config File");
-        exit(1);
+        hashpipe_error(__FUNCTION__, "Cannot open module config '%s': %s", module_config, strerror(errno));
+        return;
     }
     cbuf = getc(module_config_fp);
 
@@ -66,6 +66,11 @@ void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer **
         {
             if (fscanf(module_config_fp, "%hu\n", &module_id) == 1)
             {
+                if (module_id >= 0xFFFFu) {
+                    hashpipe_warn(__FUNCTION__, "Module ID %u >= MAX_MODULE_INDEX, skipping", module_id);
+                    cbuf = getc(module_config_fp);
+                    continue;
+                }
                 if (*snapshot_buffers == NULL) {
                     hashpipe_info(__FUNCTION__, "Creating snapshot buffer for module %hu\n", module_id);
                     *snapshot_buffers = new module_snapshot_buffer(module_id);
@@ -89,7 +94,7 @@ void init_module_snapshot_buffers(char *module_config, module_snapshot_buffer **
 
     if (fclose(module_config_fp) == EOF)
     {
-        fprintf(stderr, "Warning: Unable to close module configuration file.\n");
+        hashpipe_warn(__FUNCTION__, "Unable to close module config file");
     }
 }
 
@@ -164,6 +169,25 @@ static int sprint_img_snapshot_json(char* dest, size_t size, PACKET_HEADER* head
 
 static uds_connection_t *g_uds_connections = NULL;
 
+void free_uds_connections(void) {
+    uds_connection_t *conn = g_uds_connections;
+    while (conn) {
+        uds_connection_t *next = conn->next;
+        if (conn->fd >= 0) close(conn->fd);
+        free(conn);
+        conn = next;
+    }
+    g_uds_connections = NULL;
+}
+
+void free_module_snapshot_buffers(module_snapshot_buffer *buffers) {
+    module_snapshot_buffer *b = buffers;
+    while (b) {
+        module_snapshot_buffer *next = b->next;
+        delete b;
+        b = next;
+    }
+}
 
 // Attempts a non-blocking connection to the server's socket.
 static void uds_connect(uds_connection_t* conn) {

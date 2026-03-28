@@ -9,7 +9,7 @@ CATCH2_LIBS     = $(shell pkg-config --libs   catch2-with-main 2>/dev/null || ec
 
 SOURCES_UNDER_TEST = ../../util/pff.cpp ../../util/image.cpp
 
-TEST_SOURCES = test_pff.cpp test_image_rotation.cpp test_packet_utils.cpp
+TEST_SOURCES = test_pff.cpp test_image_rotation.cpp test_packet_utils.cpp test_net_thread_parsing.cpp
 
 TARGET = panoseti_unit_tests
 

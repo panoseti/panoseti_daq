@@ -221,6 +221,20 @@ extern "C"
 
     module_snapshot_buffer *get_snapshot_buffer(uint16_t module_id, module_snapshot_buffer *snapshot_buffers);
 
+    /**
+     * @brief Frees all UDS connection objects in g_uds_connections, closing
+     *        any open file descriptors, and resets the list to NULL.
+     *        Call from net_thread at teardown.
+     */
+    void free_uds_connections(void);
+
+    /**
+     * @brief Deletes all module_snapshot_buffer objects in the linked list
+     *        (each destructor frees the internal snapshot_t chain).
+     *        Call from net_thread at teardown.
+     */
+    void free_module_snapshot_buffers(module_snapshot_buffer *buffers);
+
 #ifdef __cplusplus
 }
 #endif
