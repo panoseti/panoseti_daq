@@ -2,58 +2,76 @@ name: panoseti_daq ci
 
 on:
   push:
-    branches: [ main, test-build-action, uds-to-grpc, dev]
+    branches: [ master, dev, claude-refactor ]
   pull_request:
-    branches: [ main ]
+    branches: [ master, dev ]
 
 jobs:
-  compile-test:
-    name: Test compilation and individual test files
+  # ── Job 1: compile and unit tests ────────────────────────────────────────────
+  # Builds the daq-plugin-builder stage, which compiles hashpipe.so and runs all
+  # Catch2 unit tests inside the Linux/AMD64 container. A unit test failure fails
+  # the build here, before the integration test job runs.
+  unit-tests:
+    name: Compile and unit tests
     runs-on: ubuntu-latest
-    timeout-minutes: 25  # Overall job timeout
+    timeout-minutes: 5
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Build and cache Docker image
-      id: build_image
+    - name: Build daq-plugin-builder stage (runs unit tests)
       uses: docker/build-push-action@v5
       with:
         context: .
         file: ./tests/ci_tests/Dockerfile
-        load: true
-        tags: panoseti-daq:latest
+        target: daq-plugin-builder
+        push: false
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    # Quick functionality tests
-    - name: Run basic functionality tests
-      timeout-minutes: 5
-      run: |
-        docker run --rm --shm-size=2g panoseti-daq:latest \
-          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_can_hashpipe_init.py
+  # ── Job 2: integration tests ──────────────────────────────────────────────────
+  # Builds the final daq-test image (reuses cached layers from job 1), then
+  # runs all 8 integration test files in a single container session — one Hashpipe
+  # process, one tcpreplay replay, one pytest invocation. This avoids the ~45 s
+  # Hashpipe startup overhead that would be paid for each separate docker run.
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: unit-tests
 
-    # Framework resilience tests
-    - name: Run UDS resilience tests  
-      timeout-minutes: 5
-      run: |
-        docker run --rm --shm-size=2g panoseti-daq:latest \
-          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_uds_resilience.py
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-    # Data integrity tests
-    - name: Run UDS data path tests
-      timeout-minutes: 5
-      run: |
-        docker run --rm --shm-size=2g panoseti-daq:latest \
-          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_uds_data_path.py
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
-    # Filesystem-dependent tests (need more time in containers)
-    - name: Run PFF header consistency tests
-      timeout-minutes: 5
+    - name: Build daq-test image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./tests/ci_tests/Dockerfile
+        target: daq-test
+        load: true
+        tags: panoseti-daq:ci
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Run all integration tests (single container session)
+      timeout-minutes: 10
       run: |
-        docker run --rm --shm-size=2g panoseti-daq:latest \
-          python3 -m pytest -s -v --maxfail=1 tests/ci_tests/test_pff_header_consistency.py
+        docker run --rm --shm-size=2g panoseti-daq:ci \
+          python3 -m pytest -v --tb=short --timeout=120 \
+            tests/ci_tests/test_can_hashpipe_init.py \
+            tests/ci_tests/test_uds_resilience.py \
+            tests/ci_tests/test_uds_data_path.py \
+            tests/ci_tests/test_pff_header_consistency.py \
+            tests/ci_tests/test_packet_sequence_monotonic.py \
+            tests/ci_tests/test_module_id_correctness.py \
+            tests/ci_tests/test_timestamp_sanity.py \
+            tests/ci_tests/test_image_data_nonzero.py

@@ -71,20 +71,27 @@ cd tests/packetTestGenerator && cmake . && make
 
 ## Running Tests
 
-Tests run via Docker-based CI using pytest:
+Two test layers are provided: fast Catch2 unit tests and Docker-based integration tests.
 
 ```bash
-# Run full CI test suite (requires Docker)
+# Unit tests (no Docker, seconds)
+cd tests/unit && make clean && make && ./panoseti_unit_tests --reporter compact
+
+# Full CI: unit tests + integration tests (requires Docker)
 ./run_ci_tests.sh
 
-# Individual test files (inside CI container / test environment)
+# Individual integration test files (inside the daq-ssh-test container)
 pytest tests/ci_tests/test_can_hashpipe_init.py
 pytest tests/ci_tests/test_uds_resilience.py
 pytest tests/ci_tests/test_uds_data_path.py
 pytest tests/ci_tests/test_pff_header_consistency.py
+pytest tests/ci_tests/test_packet_sequence_monotonic.py
+pytest tests/ci_tests/test_module_id_correctness.py
+pytest tests/ci_tests/test_timestamp_sanity.py
+pytest tests/ci_tests/test_image_data_nonzero.py
 ```
 
-CI is defined in `.github/workflows/ci.yml`.
+CI is defined in `.github/workflows/ci.yml` (triggers on push to `master` / `claude-refactor`, PRs to `master`).
 
 ## Pipeline Architecture
 

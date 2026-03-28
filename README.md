@@ -261,13 +261,13 @@ make test
 Integration tests spin up a real Hashpipe instance inside Docker, replay a captured packet trace via `tcpreplay`, and assert end-to-end behavior. The unit tests also run as part of the Docker builder stage — the image will fail to build if any unit test fails.
 
 ```bash
-# Build image (runs unit tests) and execute integration tests
+# Full CI (recommended): unit tests + all integration tests
 ./run_ci_tests.sh
 
-# Run individual integration test suites (requires built image)
-docker build -t panoseti-daq -f tests/ci_tests/Dockerfile .
+# Quick iteration: run one test file against an already-built image
+docker build -t panoseti-daq -f tests/ci_tests/Dockerfile --target daq-ssh-test .
 docker run --rm --shm-size=2g panoseti-daq \
-    python3 -m pytest -s -v tests/ci_tests/test_can_hashpipe_init.py
+    python3 -m pytest -v --tb=short tests/ci_tests/test_can_hashpipe_init.py
 ```
 
 | Test file | What it tests |
@@ -283,7 +283,7 @@ docker run --rm --shm-size=2g panoseti-daq \
 
 The CI fixture (`conftest.py`) starts the Python test code as the **UDS server** (the role normally played by `panoseti_grpc`), replays a `.pcapng` capture at 1 Mbps on the loopback interface, and launches Hashpipe as the client — mirroring the production connection direction exactly.
 
-CI runs on GitHub Actions (`.github/workflows/ci.yml`) on every push to `main` and `dev`.
+CI runs on GitHub Actions (`.github/workflows/ci.yml`) on every push to `master` and pull requests targeting `master`.
 
 ---
 
