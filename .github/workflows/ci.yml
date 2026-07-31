@@ -2,7 +2,7 @@ name: panoseti_daq ci
 
 on:
   push:
-    branches: [ main, test-build-action, uds-to-grpc]
+    branches: [ main, test-build-action, uds-to-grpc, dev]
   pull_request:
     branches: [ main ]
 

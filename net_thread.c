@@ -24,7 +24,6 @@
 #include "image.h"
 #include "net_thread.h"
 
-
 static int group_ph_frames;
 static module_snapshot_buffer *snapshot_buffers;
 
@@ -38,8 +37,6 @@ static int init(hashpipe_thread_args_t *args)
     // define default network params
     char bindhost[80];
     int bindport = 60001;
-    // define the snapshot directory
-    char ssdir[64];
     // snapshot interval time (ms), defaut is 100ms.
     int ssint = 100;
 
@@ -50,7 +47,6 @@ static int init(hashpipe_thread_args_t *args)
     hashpipe_status_t st = args->st;
     // set default values.
     strcpy(bindhost, "0.0.0.0");
-    strcpy(ssdir, "/ramdisk");
     // Lock shared buffer to properly get and set values.
     hashpipe_status_lock_safe(&st);
 
@@ -63,12 +59,10 @@ static int init(hashpipe_thread_args_t *args)
     // Get ph frame grouping info
     hgeti4(st.buf, "GROUPPHFRAMES", &group_ph_frames);
     // Get snapshot info
-    hgets(st.buf, "SSDIR", 64, ssdir);
     hgeti4(st.buf, "SSINT", &ssint);
     // Store bind host/port info and other info in status buffer
     hputs(st.buf, "BINDHOST", bindhost);
     hputi4(st.buf, "BINDPORT", bindport);
-    hputs(st.buf, "SSDIR", ssdir);
     hputi4(st.buf, "SSINT", ssint);
     hputi8(st.buf, "NPACKETS", 0);
     // Get module config path
@@ -120,7 +114,8 @@ static int init(hashpipe_thread_args_t *args)
     // Initialize snapshot buffers
     snapshot_buffers = NULL;
     init_module_snapshot_buffers(module_config, &snapshot_buffers);
-    if (snapshot_buffers == NULL) {
+    if (snapshot_buffers == NULL)
+    {
         hashpipe_error("net_thread", "Failed to initialize snapshot buffers\n");
         pthread_exit(NULL);
     }
@@ -208,10 +203,10 @@ static void *run(hashpipe_thread_args_t *args)
     uint64_t mcnt = 0; // Mcount of
     int block_idx = 0; // The input buffer block index
     HSD_input_block_header_t *blockHeader;
-    unsigned char *pkt_data;                  // Packet Data from PKT_UDP_DATA
-    struct timeval nowTime;                   // Current NTP UTC time
-    struct timeval lastImg16Time, lastPHTime; // Timestamp for the last pkt
-    uint64_t tdiff = 0;                       // time difference(us)
+    unsigned char *pkt_data;   // Packet Data from PKT_UDP_DATA
+    struct timeval nowTime;    // Current NTP UTC time
+    struct timeval lastPHTime; // Timestamp for the last pkt
+    uint64_t tdiff = 0;        // time difference(us)
     lastPHTime.tv_sec = 0;
     lastPHTime.tv_usec = 0;
     uint8_t imgfull = 0; // this is for indicating if we get a full image from 4 quabos
@@ -223,19 +218,15 @@ static void *run(hashpipe_thread_args_t *args)
     unsigned int pktsock_drops = 0; // Stats counter for dropped socket packet
     uint64_t npackets = 0;          // number of received packets
     int bindport = 0;
-    char ssdir[64];
     int ssint = 0;
-    uint8_t imgbuf[2048];
-    uint8_t oimgbuf[512];
     uint8_t quabo_num = 0;
-    PACKET_HEADER imgheader[4];
+    uint64_t nphevents = 0;
 
     hashpipe_status_lock_safe(&st);
 
     // Get info from status buffer if present (no change if not present)
     hgeti4(st.buf, "BINDPORT", &bindport);
     hputs(st.buf, status_key, "running");
-    hgets(st.buf, "SSDIR", 64, ssdir);
     hgeti4(st.buf, "SSINT", &ssint);
     hashpipe_status_unlock_safe(&st);
 
@@ -264,6 +255,7 @@ static void *run(hashpipe_thread_args_t *args)
         hputi4(st.buf, "NETBKOUT", block_idx);
         hputi8(st.buf, "NETMCNT", mcnt);
         hputi8(st.buf, "NPACKETS", npackets);
+        hputi8(st.buf, "NPHEVENT", nphevents);
         hashpipe_status_unlock_safe(&st);
 
         // Wait for data
@@ -356,25 +348,39 @@ static void *run(hashpipe_thread_args_t *args)
             // ===========
 
             // check idle sockets to detect grpc re-init
-            if (timeval_diff(&last_idle_check_time, &nowTime) > UDS_IDLE_CHECK_PERIOD_US) {
+            if (timeval_diff(&last_idle_check_time, &nowTime) > UDS_IDLE_CHECK_PERIOD_US)
+            {
                 check_uds_connections(&nowTime);
                 last_idle_check_time = nowTime; // Update the check time
             }
 
             // Fetch the snapshot buffer for the current module
             module_snapshot_buffer *snapshot_buffer = get_snapshot_buffer(blockHeader->pkt_head[i].mod_num, snapshot_buffers);
-            if (snapshot_buffer) {
+            if (snapshot_buffer)
+            {
                 snapshot_buffer->update_snapshot(
                     &blockHeader->pkt_head[i],
                     pkt_data + BYTE_PKT_HEADER,
                     &nowTime,
                     ssint,
-                    group_ph_frames
-                );
+                    group_ph_frames);
             }
 
             // ==== End snapshot code ====
-
+            // ==== Update HASHPIPE status buffer for PH events ====
+            // The HASHPIPE status buffer is only updated every ssint ms
+            // check if the mode is PH mode - mode is 0x01 or 0x03
+            if (blockHeader->pkt_head[i].acq_mode & 0x01 == 0x01)
+                nphevents++;
+            if (timeval_diff(&lastPHTime, &nowTime) > ssint * 1000)
+            {
+                hashpipe_status_lock_safe(&st);
+                hputi8(st.buf, "NPHEVENT", nphevents);
+                hashpipe_status_unlock_safe(&st);
+                // update the lastPHTime
+                lastPHTime = nowTime;
+            }
+            // ==== End HASHPIPE status buffer update ====
             // Release the hashpipe frame back to the kernel to gather data
             hashpipe_pktsock_release_frame(p_frame);
 
